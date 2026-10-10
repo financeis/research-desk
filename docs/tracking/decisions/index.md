@@ -22,3 +22,5 @@
 | [0018](0018-page-picture-for-text-less-pdfs.md) | 글자 없는 PDF는 첫 장 그림을 AI에게 보여 준다 | 2026-10-10 |
 | [0019](0019-closed-publisher-list-filename-tag-only-for-suspects.md) | 발행처는 사전의 닫힌 목록 안에서 AI가 고르고, 파일 이름 표기는 의심 표시·다시 분류 대상 고르기에만 쓴다 | 2026-10-10 |
 | [0020](0020-requeue-to-pending-for-retagging.md) | 다시 분류는 대기 줄로 되돌리는 `tag requeue`로 한다 | 2026-10-10 |
+| [0021](0021-kis-token-file-shared-with-masterdb.md) | KIS 접근 토큰은 masterdb와 토큰 파일을 같이 쓰고, 한 실행에 한 번만 받는다 | 2026-10-10 |
+| [0022](0022-peers-profile-model-sonnet.md) | 유사 기업 카드 모델은 `claude-sonnet-5-5`(시험 실행 뒤 사용자 결정) | 2026-10-10 |
