@@ -20,8 +20,16 @@ Checked:
   1) and ``--codes`` writes nothing and exits 1. Also run with the real KIS client against a KIS
   stand-in whose token request is refused (403) or fails (5xx): one token attempt (with its
   retries), no stock request;
-- ``--codes``: prints the results, writes nothing (no snapshot, no run record), excess from the
-  stored snapshots' market medians or blank; exit 0 only when every code was received;
+- ``--codes``: prints the results, writes nothing (no snapshot, no run record, no history),
+  excess from the stored snapshots' market medians or blank; exit 0 only when every code was
+  received;
+- the adjusted-close history (``stock_price_daily``): a year of daily prices asked (LOOKBACK_DAYS
+  380, three KIS pages a stock with the real client); a first run writes every received stock's
+  whole series; the next run adds only the new days; a stock whose past adjusted closes changed
+  (a split, also one KIS shows a day late) or whose stored history is shorter is written whole;
+  rows before the window's first day are deleted; partial writes only the received stocks;
+  failed, a token failure and ``--codes`` leave it untouched; a failed history write closes the
+  run as failed and the next run writes the whole series again;
 - the KIS client gets the keys, the address and the call rate from the settings; values added to
   ``.env`` are used.
 """
@@ -32,6 +40,7 @@ import functools
 import io
 import json
 import sys
+from collections import Counter
 from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -44,10 +53,11 @@ from research_desk.core import kis as core_kis
 from research_desk.core.kis import KisError
 from research_desk.features.prices import jobs, logic, register_jobs
 
-from .fakes import AS_OF, KEY, RUNS, SNAPSHOT, URL, FakeDBError, FakeKis, FakeSupabase
+from .fakes import AS_OF, DAILY, KEY, RUNS, SNAPSHOT, URL, FakeDBError, FakeKis, FakeSupabase
 
+# KIS_TOKEN_CACHE too: a test whose real client gets a token must never write the shared token file.
 ENV = ("SUPABASE_URL", "SUPABASE_SERVICE_KEY", "SUPABASE_DB_URL", "KIS_APP_KEY", "KIS_APP_SECRET",
-       "KIS_BASE_URL", "PRICES_MAX_CALLS_PER_SEC", "KRX_CSV_PATH")
+       "KIS_BASE_URL", "PRICES_MAX_CALLS_PER_SEC", "KRX_CSV_PATH", "KIS_TOKEN_CACHE")
 APP_KEY, APP_SECRET = "PSfakeAppKey0123456789", "fakeAppSecret/0123456789+abc=="
 NOW = datetime(2026, 10, 8, 9, 40, tzinfo=timezone.utc)   # 18:40 KST
 TODAY = date(2026, 10, 8)
@@ -274,6 +284,12 @@ def test_the_lookback_covers_127_trading_days_and_holidays():
     assert weekdays >= 127 + 15
 
 
+def test_the_lookback_is_380_calendar_days_more_than_a_year_of_trading_days():
+    assert jobs.LOOKBACK_DAYS == 380
+    weekdays = sum(1 for i in range(jobs.LOOKBACK_DAYS + 1) if (TODAY - timedelta(days=i)).weekday() < 5)
+    assert weekdays >= 250 + 15   # 250 trading days with room for a year's holidays
+
+
 def test_the_run_record_is_running_while_kis_is_asked(world, monkeypatch):
     full_world(world)
     seen = []
@@ -452,7 +468,7 @@ def test_an_interrupt_closes_the_run_as_failed_and_goes_up(world):
         update()
     [run] = world.db.runs()
     assert run["status"] == "failed" and run["message"] == "실행 중 오류로 멈췄습니다: KeyboardInterrupt"
-    assert world.db.tables[SNAPSHOT] == []
+    assert world.db.tables[SNAPSHOT] == [] and world.db.queries(DAILY) == []
 
 
 def test_a_run_record_that_cannot_be_written_stops_before_kis(world):
@@ -515,6 +531,7 @@ def test_without_the_token_a_run_asks_no_stock_and_fails_at_once(world, capsys):
                    "as_of": None, "stocks_total": 10, "stocks_ok": 0, "stocks_failed": 10,
                    "message": run_without_token(TOKEN_REASON)}
     assert world.db.tables[SNAPSHOT] == before and world.db.queries(SNAPSHOT) == []
+    assert world.db.queries(DAILY) == []   # the history is not touched either
 
 
 def test_without_the_token_codes_ask_nothing_and_write_nothing(world, capsys):
@@ -539,22 +556,38 @@ def test_an_interrupt_while_the_token_is_asked_closes_the_run_as_failed(world):
 class KisServer:
     """The KIS server behind a real ``KisClient`` (an httpx MockTransport: nothing leaves this PC).
 
-    The token request gets ``token_answer()``; any other request an empty KIS answer. ``paths``
-    lists every request. ``clock`` and ``sleep`` are the client's: sleeping moves the clock
-    (nothing waits) and ``sleeps`` keeps each wait.
+    The token request gets ``token_answer()``. Daily prices come from ``daily`` (KIS output2 rows
+    per code) as KIS gives them: the asked span, newest first, at most 100 rows an answer. The
+    quote is ``quote``; any other request gets an empty KIS answer. ``paths`` lists every
+    request's path and ``requests`` the requests. ``clock`` and ``sleep`` are the client's:
+    sleeping moves the clock (nothing waits) and ``sleeps`` keeps each wait.
     """
 
     def __init__(self) -> None:
         self.token_answer = lambda: httpx.Response(200, json={"access_token": "fake-access-token"})
+        self.daily: dict[str, list[dict]] = {}
+        self.quote: dict = {}
         self.paths: list[str] = []
+        self.requests: list[httpx.Request] = []
         self.now = 0.0
         self.sleeps: list[float] = []
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.paths.append(request.url.path)
+        self.requests.append(request)
         if request.url.path == core_kis.TOKEN_PATH:
             return self.token_answer()
-        return httpx.Response(200, json={"rt_cd": "0", "msg_cd": "MCA00000", "output2": [], "output": {}})
+        answer = {"rt_cd": "0", "msg_cd": "MCA00000", "output2": [], "output": {}}
+        if request.url.path == core_kis.DAILY_PATH:
+            params = request.url.params
+            low, high = params["FID_INPUT_DATE_1"], params["FID_INPUT_DATE_2"]
+            rows = sorted((row for row in self.daily.get(params["FID_INPUT_ISCD"], [])
+                           if low <= row["stck_bsop_date"] <= high),
+                          key=lambda row: row["stck_bsop_date"], reverse=True)   # newest first, like KIS
+            answer["output2"] = rows[:core_kis.DAILY_PAGE_ROWS]
+        elif request.url.path == core_kis.QUOTE_PATH:
+            answer["output"] = self.quote
+        return httpx.Response(200, json=answer)
 
     def clock(self) -> float:
         return self.now
@@ -816,3 +849,205 @@ def test_codes_write_their_results_on_a_cp949_pipe(world, monkeypatch):
                                  "error": f"KisError: KIS daily prices 080220 failed: {REPLACED}"}
     assert results["005930"]["close"] == 110
     assert lines(written(pipes.err))[-1].startswith("확인용 실행이라 아무것도 저장하지 않았습니다: ")
+
+
+# ── the adjusted-close history ───────────────────────────────────────────────
+
+NEXT_DAY = date(2026, 10, 9)                                  # the Friday after AS_OF
+NEXT_NOW = datetime(2026, 10, 9, 9, 40, tzinfo=timezone.utc)  # 18:40 KST
+MONDAY = date(2026, 10, 12)
+MONDAY_NOW = datetime(2026, 10, 12, 9, 40, tzinfo=timezone.utc)
+
+
+def kis_series(world, code) -> dict[str, int]:
+    """The adjusted closes KIS gives for ``code`` now, by ISO day."""
+    return {row["date"].isoformat(): row["close"] for row in world.kis.daily[code]}
+
+
+def history_sent(db, after: int = 0) -> list[dict]:
+    """The rows of the history upserts, from the ``after``-th upsert on."""
+    return [row for q in db.queries(DAILY, "upsert")[after:] for row in q.rows_sent]
+
+
+def upserts_so_far(db) -> int:
+    return len(db.queries(DAILY, "upsert"))
+
+
+def move_to(monkeypatch, now) -> None:
+    monkeypatch.setattr(jobs, "utc_now", lambda: now)
+
+
+def test_a_first_run_writes_the_whole_series_of_every_received_stock(world):
+    full_world(world)
+    world.kis.add("080220", closes(130, n=200))   # a longer series than the others
+    # snapshots stored before the history existed: no history row on their day, so all in full
+    world.db.add_snapshot(OLD | {"stock_code": "005930"})
+    assert update() == 0
+    assert world.db.history() == {code: kis_series(world, code) for code, _ in STOCKS}
+    upserts = world.db.queries(DAILY, "upsert")
+    assert {q.on_conflict for q in upserts} == {"stock_code,trade_date"}
+    assert {q.returning for q in upserts} == {"minimal"}
+    assert len(history_sent(world.db)) == 127 + 200 + 127
+    assert history_sent(world.db)[0] == {"stock_code": "005930", "trade_date": "2026-04-15", "close": 100}
+
+
+def test_the_history_holds_the_same_closes_the_returns_are_computed_from(world):
+    full_world(world)
+    world.kis.add("005930", [100] * 50 + [80] * 76 + [120])
+    assert update() == 0
+    stored = world.db.history()["005930"]
+    assert list(stored.values())[-1] == world.db.snapshot("005930")["close"] == 120
+    assert list(stored)[-1] == world.db.snapshot("005930")["as_of"] == "2026-10-08"
+    assert world.db.snapshot("005930")["ret_6m"] == 20.0   # still from the KIS series: 120 / 100
+
+
+def test_the_next_run_adds_only_the_new_day(world, monkeypatch):
+    full_world(world)
+    assert update() == 0
+    done = upserts_so_far(world.db)
+    for code, _ in STOCKS:
+        world.kis.add(code, closes(110) + [112], last_day=NEXT_DAY)
+    move_to(monkeypatch, NEXT_NOW)
+    assert update() == 0
+    assert history_sent(world.db, done) == [
+        {"stock_code": code, "trade_date": "2026-10-09", "close": 112} for code, _ in STOCKS]
+    assert world.db.history() == {code: kis_series(world, code) for code, _ in STOCKS}
+
+
+def test_a_run_that_brings_no_new_day_writes_no_history_row(world):
+    full_world(world)
+    assert update() == 0
+    before, done = world.db.history(), upserts_so_far(world.db)
+    assert update() == 0   # the same day again
+    assert upserts_so_far(world.db) == done and world.db.history() == before
+
+
+def test_a_stock_whose_past_adjusted_closes_changed_is_written_whole(world, monkeypatch):
+    full_world(world)
+    assert update() == 0
+    done = upserts_so_far(world.db)
+    world.kis.add("005930", [50] * 126 + [55, 56], last_day=NEXT_DAY)   # a 2-for-1 split: the past halved
+    for code in ("080220", "0126Z0"):
+        world.kis.add(code, closes(110) + [112], last_day=NEXT_DAY)
+    move_to(monkeypatch, NEXT_NOW)
+    assert update() == 0
+    assert Counter(row["stock_code"] for row in history_sent(world.db, done)) == {
+        "005930": 128, "080220": 1, "0126Z0": 1}
+    assert world.db.history()["005930"] == kis_series(world, "005930")
+    assert set(world.db.history()["005930"].values()) == {50, 55, 56}   # no unadjusted close left
+
+
+def test_an_adjustment_kis_shows_a_day_late_is_still_caught(world, monkeypatch):
+    full_world(world)
+    assert update() == 0
+    # Friday: the split's first day shows the new price, KIS has not re-scaled the past yet
+    world.kis.add("005930", closes(110) + [56], last_day=NEXT_DAY)
+    for code in ("080220", "0126Z0"):
+        world.kis.add(code, closes(110) + [112], last_day=NEXT_DAY)
+    move_to(monkeypatch, NEXT_NOW)
+    assert update() == 0
+    done = upserts_so_far(world.db)
+    # Monday: the past is re-scaled; Friday's close (the last stored day) is the same, the oldest is not
+    world.kis.add("005930", [50] * 126 + [55, 56, 57], last_day=MONDAY)
+    for code in ("080220", "0126Z0"):
+        world.kis.add(code, closes(110) + [112, 113], last_day=MONDAY)
+    move_to(monkeypatch, MONDAY_NOW)
+    assert update() == 0
+    assert Counter(row["stock_code"] for row in history_sent(world.db, done)) == {
+        "005930": 129, "080220": 1, "0126Z0": 1}
+    assert world.db.history()["005930"] == kis_series(world, "005930")
+
+
+def test_a_shorter_stored_history_is_written_whole(world):
+    full_world(world)
+    for code in ("005930", "080220"):
+        world.db.add_snapshot(OLD | {"stock_code": code})          # as_of 2026-10-07
+    days = list(kis_series(world, "005930").items())[:-1]           # up to 2026-10-07
+    for day, close in days[-20:]:                                   # 005930: only the last 20 days stored
+        world.db.add_daily({"stock_code": "005930", "trade_date": day, "close": close})
+    for day, close in days:                                         # 080220: every day stored
+        world.db.add_daily({"stock_code": "080220", "trade_date": day, "close": close})
+    assert update() == 0
+    assert Counter(row["stock_code"] for row in history_sent(world.db)) == {
+        "005930": 127, "080220": 1, "0126Z0": 127}                  # 0126Z0: no snapshot, no history
+    assert world.db.history() == {code: kis_series(world, code) for code, _ in STOCKS}
+
+
+def test_the_history_before_the_window_is_deleted(world):
+    full_world(world)
+    for row in ({"stock_code": "999999", "trade_date": (START - timedelta(days=1)).isoformat(), "close": 1},
+                {"stock_code": "999999", "trade_date": START.isoformat(), "close": 2},   # the window's first day
+                {"stock_code": "005930", "trade_date": "2024-01-02", "close": 3}):
+        world.db.add_daily(row)
+    assert update() == 0
+    [delete] = world.db.queries(DAILY, "delete")
+    assert delete.filters == [("lt", "trade_date", START.isoformat())] and delete.returning == "minimal"
+    assert START.isoformat() == "2025-09-23"   # 380 calendar days before 2026-10-08
+    history = world.db.history()
+    assert history["999999"] == {"2025-09-23": 2}   # a stock out of the list keeps its rows in the window
+    assert history["005930"] == kis_series(world, "005930")
+
+
+def test_partial_writes_the_history_of_the_received_stocks_only(world):
+    ten_with_failures(world, [3, 6])   # 2 of 10: partial
+    world.db.add_snapshot(OLD | {"stock_code": "000003"})
+    world.db.add_daily({"stock_code": "000003", "trade_date": "2026-10-07", "close": 777})
+    assert update() == 0
+    history = world.db.history()
+    assert history.pop("000003") == {"2026-10-07": 777}   # not received: as it was
+    received = [code for code, _ in TEN if code not in ("000003", "000006")]
+    assert history == {code: kis_series(world, code) for code in received}
+    assert {row["stock_code"] for row in history_sent(world.db)} == set(received)
+    assert len(world.db.queries(DAILY, "delete")) == 1   # the rows before the window go on every saved run
+
+
+def test_failed_leaves_the_history_as_it_was(world):
+    ten_with_failures(world, [2, 5, 9])   # 3 of 10: failed
+    world.db.add_daily({"stock_code": "000000", "trade_date": "2026-10-07", "close": 777})
+    world.db.add_daily({"stock_code": "000001", "trade_date": "2024-01-02", "close": 5})   # even an old row stays
+    before = deepcopy(world.db.tables[DAILY])
+    assert update() == 1
+    assert world.db.tables[DAILY] == before
+    assert world.db.queries(DAILY) == []
+
+
+def test_codes_leave_the_history_as_it_was(world, capsys):
+    full_world(world)
+    world.db.add_daily({"stock_code": "005930", "trade_date": "2024-01-02", "close": 5})   # an old row too
+    before = deepcopy(world.db.tables[DAILY])
+    assert update("--codes", "005930,080220") == 0
+    assert world.db.tables[DAILY] == before
+    assert world.db.queries(DAILY) == []
+
+
+def test_a_failed_history_write_closes_the_run_as_failed_and_the_next_run_writes_it_whole(world):
+    full_world(world)
+    world.db.fail_next("upsert", table=DAILY)
+    with pytest.raises(FakeDBError):
+        update()
+    [run] = world.db.runs()
+    assert run["status"] == "failed" and run["message"] == "실행 중 오류로 멈췄습니다: FakeDBError"
+    assert world.db.snapshot("005930")["as_of"] == "2026-10-08"   # not atomic: the snapshots were written
+    assert world.db.history() == {}
+    assert update() == 0   # no history row on the snapshot's day: every series in full
+    assert world.db.history() == {code: kis_series(world, code) for code, _ in STOCKS}
+
+
+def kis_row(day: date, close: int) -> dict:
+    """One KIS output2 row as KIS sends it: every value a string."""
+    return {"stck_bsop_date": day.strftime("%Y%m%d"), "stck_clpr": str(close), "acml_vol": "1000",
+            "acml_tr_pbmn": "1000000"}
+
+
+def test_a_year_of_daily_prices_takes_three_kis_calls_a_stock(world, kis_server, capsys):
+    world.stocks([("005930", "KOSPI")])
+    days = [START + timedelta(days=i) for i in range(jobs.LOOKBACK_DAYS + 1)]
+    days = [day for day in days if day.weekday() < 5]
+    kis_server.daily["005930"] = [kis_row(day, 60000 + i) for i, day in enumerate(days)]
+    assert update() == 0
+    daily = [request.url.params for request in kis_server.requests if request.url.path == core_kis.DAILY_PATH]
+    assert len(days) > 2 * core_kis.DAILY_PAGE_ROWS and len(daily) == 3   # 100 + 100 + the rest
+    assert [params["FID_INPUT_DATE_1"] for params in daily] == [START.strftime("%Y%m%d")] * 3
+    assert daily[0]["FID_INPUT_DATE_2"] == TODAY.strftime("%Y%m%d")
+    assert world.db.history()["005930"] == {day.isoformat(): 60000 + i for i, day in enumerate(days)}
+    assert world.db.snapshot("005930")["close"] == 60000 + len(days) - 1

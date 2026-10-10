@@ -9,7 +9,7 @@
 - **오류 모양.** 허용 호스트 거절(400)만 본문이 일반 글자 `Invalid host header`이고, 나머지 오류 응답 본문은 언제나 `{"detail": ...}`이다.
   - 업무 오류(404·409·422)는 `detail`이 아래 각 주소에 적은 고정 한국어 문장이다.
   - 요청 값 형식·범위 오류(정수가 아닌 id, 범위 밖 `days`, 정해진 값이 아닌 `unit`·`action` 등)는 422이고 `detail`은 FastAPI 기본 형식(오류 항목 목록)이다.
-  - **기능 사용 불가:** 한 기능이 준비에 실패하면 그 기능의 주소만 503 `{"detail": "<기능 이름> 기능을 지금 쓸 수 없습니다: <이유>"}`. 기능 이름은 `기업 목록`, `리포트`, `분석`, `비교`, `커버리지`, `검토`, `주가`, `유사 기업` 중 하나다. 다른 기능의 공개 창구를 거쳐 전해진 실패는 실패한 기능의 이름으로 보인다(예: 커버리지 화면에서 `리포트 기능을 지금 쓸 수 없습니다: …`, 상태 줄 주소에서 `주가 기능을 지금 쓸 수 없습니다: …`). 이유에는 경로·키 값·오류 추적이 없다. 원인을 고치면 다음 요청에서 회복한다.
+  - **기능 사용 불가:** 한 기능이 준비에 실패하면 그 기능의 주소만 503 `{"detail": "<기능 이름> 기능을 지금 쓸 수 없습니다: <이유>"}`. 기능 이름은 `기업 목록`, `리포트`, `분석`, `커버리지`, `검토`, `주가`, `유사 기업`, `수급` 중 하나다. 다른 기능의 공개 창구를 거쳐 전해진 실패는 실패한 기능의 이름으로 보인다(예: 커버리지 화면에서 `리포트 기능을 지금 쓸 수 없습니다: …`, 상태 줄 주소에서 `주가 기능을 지금 쓸 수 없습니다: …`). 비교 주소는 자기 이름을 쓰지 않는다 — 리포트를 못 읽으면 `리포트`, 모델 키·codex가 없으면 `분석` 이름으로 보인다. 이유에는 경로·키 값·오류 추적이 없다. 원인을 고치면 다음 요청에서 회복한다.
   - **예기치 못한 오류:** 503 `{"detail": "데이터를 불러오거나 분석하지 못했습니다. 연결 상태를 확인하고 다시 시도해 주세요."}`.
 - **리포트 공개 모양**(여러 응답이 쓰는 리포트 객체): 키는 `id, title, file_name, published_at, publisher, report_type, stock_codes, company_names, sectors_major, sectors_minor, products, summary, pdf_url`. `pdf_url`은 `/api/reports/{id}/pdf`. `summary`는 그 리포트의 현재 버전(`llm-summary@1.0`) 분석 결과 객체이거나 `null`. `file_path`·저장 경로·키는 절대 들어가지 않는다.
 - **종목 코드.** 주소의 `{code}`는 종목표 조회(기업 정보, 관심 기업 존재 확인)에서만 6자리가 되도록 앞을 0으로 채운다. DB 조회에는 받은 그대로 쓴다.
@@ -113,15 +113,51 @@
 → `{"query": 앞뒤 공백을 뺀 q, "basis": 위와 같음, "window", "price_as_of": 결과들의 주가 기준일 중 가장 늦은 것|null, "results": [{"rank", "code", "name", "market", "sector_minor", "one_line", "matched_terms": [표기…], "segment_match": {"segment", "revenue_share_pct"}|null, "coverage", "price"}]}`. 결과는 최대 `limit`개이고 `coverage`·`price`는 위와 같은 모양이다. 시드가 없으므로 `reaction`·`candidate`가 없다. `matched_terms`는 질의 용어와 완전히 일치한 그 회사의 용어(빌드 용어표의 표기, 없으면 질의에 쓴 표기), `segment_match`는 그 회사의 가장 가까운 사업부문(부문 순위에 든 회사만, 아니면 null).
 - 오류: 위의 503 세 이유, 그리고 이 주소만 `유사 기업 기능을 지금 쓸 수 없습니다: OPENAI_API_KEY가 설정되지 않았습니다`(같은 질의가 서버 캐시에 있으면 키 없이도 답한다). 임베딩 호출의 시간 초과(15초)·거부는 예기치 못한 오류의 503 문장이다.
 
+### `GET /api/flows?investor=<키>&min_cap=<억 원>&date=YYYY-MM-DD&sort=score|rank|pct|amount&limit=<n>` (수급)
+인자(형식·범위가 틀리면 아무것도 준비하지 않고 422, FastAPI 기본 형식): `investor`는 주체 키 11개(`pe_fund`, `foreigner`, `institution`, `pension`, `trust`, `fin_invest`, `insurance`, `bank`, `other_fin`, `other_corp`, `individual`) 중 하나(기본 `pe_fund`). `min_cap`은 억 원 단위 정수 0~10,000,000(기본 1000). `date`는 `YYYY-MM-DD`로 쓴 실제 날짜(기본: 순위를 매긴 가장 최근 날. 시각이 붙었거나 숫자만 쓰면 422). `sort`는 `score`|`rank`|`pct`|`amount`(기본 `score`). `limit`은 정수 1~200(기본 50).
+확인 순서(앞에서 막히면 뒤는 없다): 형식 오류 422 → 준비 실패 503 → 순위를 매긴 날이 없음 503 → `date`가 순위를 매긴 날 목록에 없음 404 `그날의 수급 순위가 없습니다.`
+503 이유(`수급 기능을 지금 쓸 수 없습니다: …`): `DB 접속 설정(SUPABASE_URL, SUPABASE_SERVICE_KEY)이 없습니다`, `종목표 파일을 읽을 수 없습니다`, `아직 순위를 매긴 날이 없습니다(python -m research_desk flows update)`(요청마다 다시 확인하고 기억하지 않는다). 리포트 수를 읽다 난 준비 실패는 `리포트` 이름 그대로 온다.
+→
+```
+{"date": "YYYY-MM-DD", "dates": ["YYYY-MM-DD", …], "investor", "min_cap", "sort", "total",
+ "rows": [{"no", "code", "name", "market", "market_cap", "amount", "pct", "rank", "window_days",
+           "short_history", "score", "ref_ranks": {"pe_fund", "foreigner", "other_corp"}, "coverage"}]}
+```
+- `date`는 응답에 쓴 날, `dates`는 순위를 매긴 날(최대 60개, 최신 먼저)이다. `total`은 그룹 — 고른 주체의 순매수가 0보다 크고, 그날 시총이 `min_cap`억 원 이상이고, 그 주체의 250일 순위가 있는 종목 — 의 수(`limit` 전)다.
+- `rows`는 고른 정렬 순서로 최대 `limit`개이고 `no`는 1부터 매긴다.
+- `market_cap`·`amount`는 원 단위 정수다(`amount` = 저장된 백만 원 값 × 1,000,000). `pct`는 % 실수(0.1146 = 0.1146%), `score`는 0~100 실수다(화면이 소수 한 자리로 보인다). `rank`는 고른 주체의 250일 순위, `short_history`는 `window_days < 250`이다. `ref_ranks`는 사모·외국인·기타법인의 250일 순위이고, 없으면 null.
+- `name`·`market`(`KOSPI`|`KOSDAQ`)은 종목표에서 읽는다. 종목표에 없으면 `""`와 null.
+- `coverage`는 유사 기업 응답의 `coverage`와 같은 모양이다(최근 365일).
+- KIS도 AI도 부르지 않는다.
+
+### `GET /api/stocks/{code}/flows?period=1m|3m|6m|1y` (수급)
+인자: `code`는 `^[0-9A-Z]{6}$`만 받는다(앞에 0을 채우지 않는다 — `5930`은 422). `period`는 기본 `3m`(1m = 21, 3m = 63, 6m = 126, 1y = 250거래일). 틀리면 아무것도 준비하지 않고 422.
+확인 순서: 형식 오류 422 → 준비 실패 503(위의 앞 두 이유) → 종목표에 없는 코드 404 `종목을 찾을 수 없습니다.` → 그 종목의 저장된 행이 하나도 없음 404 `이 종목은 수급 자료가 없습니다.`(화면이 이 문장을 글자 그대로 비교해 안내 화면을 보인다). 수정 종가를 읽다 난 준비 실패는 `주가` 이름 그대로 온다.
+→
+```
+{"stock": {"code", "name", "market"},
+ "as_of": "YYYY-MM-DD"|null, "market_cap": 원|null, "window_days": 정수|null,
+ "investors": [{"key", "name", "amount": 원|null, "pct": %|null, "rank": 정수|null}],
+ "period",
+ "series": {"dates": ["YYYY-MM-DD", …], "close": [원|null, …], "flows": {"pe_fund": [원, …], …}}}
+```
+- `as_of`는 그 종목의 최근 250행 중 순위를 매긴 가장 늦은 날이고, `market_cap`·`window_days`는 그날 값이다. 그런 날이 없으면 셋 다 null이고 `investors`의 값도 모두 null이다.
+- `investors`는 주체 11개, 화면 순서다. `pct`는 그날 시총이 0보다 클 때만 있고, `rank`는 `window_days`가 60 미만이면 null이다.
+- `series`는 그 종목의 저장된 최근 행에서 기간만큼(행이 적으면 있는 만큼), 오래된 것부터다. `close`는 그날의 수정 종가(주가 이력에 없으면 null), `flows`는 주체 11개 모두 `dates`와 같은 길이의 원 단위 정수 목록이다.
+- KIS도 AI도 부르지 않는다.
+
 ### `GET /api/freshness` (자료 기준일)
 인자 없음.
-→ `{"prices": {"as_of": "YYYY-MM-DD"|null, "last_run_at": 시각|null, "last_run_status": "running"|"ok"|"partial"|"failed"|null, "stale": bool, "note": 문장|null}, "reports": {"latest_at": 시각|null, "stale": bool}, "checked_at": 시각}`. 시각은 한국 시간 ISO, 초까지(`2026-10-08T09:12:00+09:00` 꼴).
-- `as_of`는 마지막 성공(`ok`·`partial`) 주가 실행의 기준일, `last_run_at`·`last_run_status`는 가장 최근 실행(상태와 상관없이)의 시작 시각과 상태, `latest_at`은 분석 대상 리포트 중 가장 최근 `sent_at`.
-- `prices.stale`은 `note`가 있을 때만 true다. `note`는 다음 중 처음 맞는 하나: `주가가 아직 한 번도 갱신되지 않았습니다` / `마지막 주가 갱신이 실패했습니다` / `주가가 {M}월 {D}일 기준으로 밀려 있습니다. 휴장일이면 정상입니다`. `reports`에는 문장이 없다.
-- 오류: 503 `주가 기능을 지금 쓸 수 없습니다: …`(주가를 먼저 읽는다) 또는 `리포트 기능을 지금 쓸 수 없습니다: …`. 아무것도 기억하지 않으므로 원인을 고치면 다음 요청에 회복한다. 화면은 실패하면 회색 `자료 기준일 확인 불가`를 보여 준다.
+→ `{"prices": {"as_of": "YYYY-MM-DD"|null, "last_run_at": 시각|null, "last_run_status": "running"|"ok"|"partial"|"failed"|null, "stale": bool, "note": 문장|null}, "flows": {prices와 같은 다섯 키}, "reports": {"latest_at": 시각|null, "stale": bool}, "checked_at": 시각}`. 키는 이 순서다. 시각은 한국 시간 ISO, 초까지(`2026-10-08T09:12:00+09:00` 꼴).
+- `as_of`는 마지막 성공(`ok`·`partial`) 실행의 기준일, `last_run_at`·`last_run_status`는 가장 최근 실행(상태와 상관없이)의 시작 시각과 상태다(`prices`는 주가 갱신, `flows`는 수급 갱신). `latest_at`은 분석 대상 리포트 중 가장 최근 `sent_at`.
+- `prices.stale`·`flows.stale`은 `note`가 있을 때만 true다. `note`는 다음 중 처음 맞는 하나다.
+  - `prices`: `주가가 아직 한 번도 갱신되지 않았습니다` / `마지막 주가 갱신이 실패했습니다` / `주가가 {M}월 {D}일 기준으로 밀려 있습니다. 휴장일이면 정상입니다`
+  - `flows`: `수급 자료가 아직 한 번도 갱신되지 않았습니다` / `마지막 수급 갱신이 실패했습니다` / `수급 자료가 {M}월 {D}일 기준으로 밀려 있습니다. 휴장일이면 정상입니다`
+  - `reports`에는 문장이 없다.
+- 오류: 주가 → 수급 → 리포트 순서로 읽고, 처음 실패한 기능의 503 문장이 나온다(`주가 기능을 지금 쓸 수 없습니다: …` / `수급 기능을 지금 쓸 수 없습니다: …` / `리포트 기능을 지금 쓸 수 없습니다: …`). 아무것도 기억하지 않으므로 원인을 고치면 다음 요청에 회복한다. 화면은 실패하면 회색 `자료 기준일 확인 불가`를 보여 준다.
 
 ### `GET /`, `GET /assets/*` (화면 파일)
-`frontend/dist`의 빌드 결과. 화면은 주소의 `?view=`로 보기를 고른다: `reports`(기본)·`market`·`review`·`compare`(보고서 비교. 보고서 두 건을 고르기 전에는 리포트 목록이 보인다)·`themes`(테마로 기업 찾기, `&q=<검색어>`를 받는다). `web --view`는 앞의 셋만 받는다. `/`는 `index.html`을 `Cache-Control: no-cache`로 준다. 빌드가 없으면 `/`는 503 `프론트엔드를 먼저 빌드해 주세요: cd frontend && npm run build`. `/assets`는 서버를 켤 때 `frontend/dist`가 있었을 때만 연결된다.
+`frontend/dist`의 빌드 결과. 화면은 주소의 `?view=`로 보기를 고른다: `reports`(기본)·`market`·`review`·`compare`(보고서 비교. 보고서 두 건을 고르기 전에는 리포트 목록이 보인다)·`themes`(테마로 기업 찾기, `&q=<검색어>`를 받는다)·`flows`(수급 랭킹). `web --view`는 앞의 셋만 받는다. `/`는 `index.html`을 `Cache-Control: no-cache`로 준다. 빌드가 없으면 `/`는 503 `프론트엔드를 먼저 빌드해 주세요: cd frontend && npm run build`. `/assets`는 서버를 켤 때 `frontend/dist`가 있었을 때만 연결된다.
 
 ## 명령 — `python -m research_desk <명령>`
 
@@ -139,6 +175,7 @@
 | `stocks set-version` | `--as-of YYYY-MM-DD`(필수) | 성공 시 stdout에 새 버전 `KRX@YYYY-MM-DD` | 0 / 4(날짜 형식·종목표 형식 오류, 버전 정보 파일은 그대로) |
 | `prices update` | `--codes 005930,080220`(확인용. 쉼표로 나눈 숫자·영문 대문자 6자리, 소문자는 대문자로 바꿈, 그 밖은 2) | 전체 실행: 끝에 요약 한 줄 `주가 갱신 {완료\|일부 완료\|실패}({ok\|partial\|failed}): 기준일 {YYYY-MM-DD\|없음}, 성공 N종목, 실패 M종목[. 설명]` — ok·partial은 stdout, failed는 stderr. `--codes`: stdout에 종목별 계산 결과 JSON `{코드: 스냅샷 행 \| {"stock_code", "flags": ["no_data"], "error"}}`, 이어서 요약 한 줄 `확인용 실행이라 아무것도 저장하지 않았습니다: 기준일 …, 받음 N종목, 못 받음 M종목[. 저장된 스냅샷이 없어 초과수익률을 비웠습니다]`(모두 받으면 stdout, 아니면 stderr) | 0 ok·partial(`--codes`는 모두 받음) / 1 failed·실행 중 오류·접근 토큰 실패(`--codes`는 하나라도 못 받음) / 4 준비 문제. Ctrl+C는 실행 기록을 failed로 닫고 인터프리터의 중단 코드로 끝난다(PowerShell에서 -1073741510) |
 | `peers build` | `--fiscal-year N`(기본 `PEERS_FISCAL_YEAR`), `--codes 005930,080220`(쉼표·공백으로 나눔, 대문자로 바꿈, 숫자·영문 대문자 6자리가 아니면 2), `--limit n`(1 이상 정수, 대상 중 종목코드 순 앞 n곳), `--pilot` | stdout에 요약 JSON `{"build_id", "status", "fiscal_year", "profile_version", "embed_model", "eligible", "profiled", "failed", "reused", "extracted", "kept_previous": [{"stock_code", "reason"}], "embedded": {"companies", "segments"}, "tokens": {"input", "output", "embedding"}}`. `--pilot`은 그 앞에 대상 회사마다 회사·부문 유사도 상위 10 표를 찍는다. 대상이 아닌 `--codes`는 stderr `대상이 아니어서 뺀 종목: …` | 0 done·pilot / 1 incomplete·대상 없음·분류 작업 진행 중·다른 빌드 진행 중·실행 중 오류·Ctrl+C / 4 준비 문제 |
+| `flows update` | `--codes 005930,080220`(확인용. 형식은 `prices update`와 같다) | 전체 실행: 끝에 요약 한 줄 `수급 갱신 {완료\|일부 완료\|실패}({ok\|partial\|failed}): 기준일 {YYYY-MM-DD\|없음}, 성공 N종목, 실패 M종목, 순위 매긴 날 K일[. 설명]` — ok·partial은 stdout, failed는 stderr. `--codes`: stdout에 종목별 JSON `{코드: {"as_of", "window_days", "amounts": {주체 키: 원}, "ranks": {주체 키: 정수\|null}, "short_history", "institution_gap": 백만 원} \| {"error": 이유}}`(`ranks`는 창이 60일 미만이면 모두 null, `institution_gap`은 (금융투자 + 보험 + 투신 + 사모 + 은행 + 기타금융 + 연기금) − 기관합계), 이어서 요약 한 줄 `확인용 실행이라 아무것도 저장하지 않았습니다: 기준일 …, 받음 N종목, 못 받음 M종목`(모두 받으면 stdout, 아니면 stderr) | 0 ok·partial(`--codes`는 모두 받음) / 1 failed·시작 거절·접근 토큰 실패·실행 중 오류(`--codes`는 하나라도 못 받음) / 4 준비 문제. Ctrl+C는 `prices update`와 같다 |
 | `peers inspect` | 없음 | `{"profiles": [{"fiscal_year", "profile_version", "status", "count", "input_tokens", "output_tokens"}], "tokens": {"input", "output"}, "builds": [최근 빌드 10개, 백분위표·용어표 제외]}` | 0 / 4(DB 설정 없음) |
 
 ### 분류 배치 보고 (`tag run`, `tag escalate`)
@@ -179,6 +216,14 @@
 - 받지 못한 종목마다 경고 한 줄 `주가를 받지 못했습니다: <코드> (<이유>)`. 실패가 20%를 넘으면 요약 줄 끝이 `못 받은 종목이 20%를 넘어 스냅샷을 바꾸지 않았습니다[. 기준을 넘은 뒤 남은 N종목은 받지 않았습니다]`, partial이면 `못 받은 종목은 이전 값을 유지합니다`.
 - `PRICES_MAX_CALLS_PER_SEC`가 0보다 큰 수가 아니면 파이썬 오류와 함께 1(호출 전).
 
+**`flows update`의 stderr 문구.**
+- 준비 문제(4, 이 순서로 확인하고 KIS·DB를 부르지 않는다): `수급 갱신을 시작하지 않았습니다. 이유: <이유>`. 이유는 `DB 접속 설정(SUPABASE_URL, SUPABASE_SERVICE_KEY)이 없습니다` → `KIS 접속 설정(KIS_APP_KEY, KIS_APP_SECRET)이 없습니다` → `종목표 파일을 읽을 수 없습니다 (<원인>)`. 종목표 버전 불일치는 보지 않는다.
+- 시작하지 않음(1, 전체 실행과 `--codes` 모두, 아무것도 바꾸지 않음): `주가 갱신이 진행 중이라 수급 갱신을 시작하지 않았습니다. 주가 갱신이 끝난 뒤 다시 실행하세요.` / `다른 수급 갱신(실행 <번호>)이 진행 중입니다. 끝난 뒤 다시 실행하세요.` 시작한 지 2시간이 넘은 `running`은 무시한다.
+- 접근 토큰을 못 받음(1): 전체 실행은 요약 줄 끝이 `KIS 접근 토큰을 받지 못했습니다 (<이유>). 아무 종목도 받지 않았습니다`, `--codes`는 stdout 없이 `확인용 실행이라 아무것도 저장하지 않았습니다: KIS 접근 토큰을 받지 못했습니다 (<이유>). 아무 종목도 받지 않았습니다`.
+- 기준 종목을 못 받음(1): 요약 줄 끝이 `기준 종목(005930)을 받지 못해 거래일을 정할 수 없습니다 (<이유>). 다른 종목은 받지 않았습니다`(실행 기록의 메시지도 같다).
+- 받지 못한 종목마다 경고 한 줄 `수급을 받지 못했습니다: <코드> (<이유>)`. 실패가 20%를 넘으면 요약 줄 끝이 `못 받은 종목이 20%를 넘어 순위를 매기지 않았습니다[. 기준을 넘은 뒤 남은 N종목은 받지 않았습니다]`, partial이면 `못 받은 종목은 다음 실행에서 다시 받습니다`.
+- `FLOWS_MAX_CALLS_PER_SEC`가 0보다 큰 수가 아니면 파이썬 오류와 함께 1(호출 전).
+
 **`peers build`의 stderr 문구.**
 - 준비 문제(4, 이 순서로 확인하고 빌드를 시작하지 않는다): `DB 접속 설정(SUPABASE_URL, SUPABASE_SERVICE_KEY)이 없습니다` → 프로필 모델·재처리 모델의 키 `<변수>가 설정되지 않았습니다`(codex 모델이면 `codex CLI를 찾을 수 없습니다(모델 <모델>). 설치한 뒤 codex login으로 로그인하세요`) → `OPENAI_API_KEY가 설정되지 않았습니다` → `사업보고서 DB(MongoDB)에 접속하지 못했습니다. MongoDB가 켜져 있는지와 DART_MONGO_URL을 확인하세요` → `종목표 파일을 읽을 수 없습니다: <이유>` 또는 분류 명령과 같은 종목표 버전 불일치 문장 → `동의어표(features/peers/synonyms.yaml)를 읽을 수 없습니다: <이유>` → `<연도> 회계연도 사업보고서 중 parser_version 0.2.0 이상인 문서가 없습니다. DART 수집을 먼저 하세요` → 리포트 기능의 준비 실패 `리포트 기능을 지금 쓸 수 없습니다: …`.
 - 시작하지 않음(1): `분류 작업이 진행 중이라 유사도 계산을 시작하지 않았습니다. 분류가 끝난 뒤 다시 실행하세요.` / `다른 유사도 계산(빌드 <번호>)이 진행 중입니다(마지막 진행 <시각>). 끝난 뒤 다시 실행하세요.`
@@ -201,6 +246,6 @@
 |---|---|---|
 | `run-batches.ps1` | `-Iterations N`(기본 5), `-BatchSize N`(0이면 설정 기본값), `-MaxRetries N`(기본 2), `-RetrySleepS N`(기본 3), `-Python <경로>`; 환경 변수 `RESEARCH_DESK_PY` | 0 모두 완료 / 1 한 배치가 모든 시도에 실패 / 2 파이썬 못 찾음 / 3 `tag reset-worker` 실패 / 4 준비 문제(되돌리기·재시도 없이 즉시) |
 | `start-workspace.ps1` | `-SkipBuild` | 빌드·실행 실패 시 예외로 끝남 |
-| `run-prices.ps1` | `-Python <경로>`; 환경 변수 `RESEARCH_DESK_PY` | `prices update`의 종료 코드 그대로: 0 ok·partial / 1 failed·실행 중 오류 / 4 준비 문제(Ctrl+C면 그 중단 코드). 파이썬을 못 찾으면 명령을 실행하지 않고 4(`run-batches.ps1`의 2와 다르다). 명령이 종료 코드 없이 끝나면 1 |
+| `run-prices.ps1` | `-Python <경로>`; 환경 변수 `RESEARCH_DESK_PY` | `prices update`를 돌리고, 그 종료 코드가 0일 때만 이어서 `flows update`를 돌린다. 주가가 0이 아니면 그 코드로 끝나고 수급은 건너뛴다(한 줄 `주가 갱신이 성공하지 못해 수급 갱신을 건너뜁니다. 건너뛴 날의 수급 자료는 다음 실행이 채웁니다.`). 주가가 0이면 `flows update`의 종료 코드다. 두 명령의 코드 뜻은 같다: 0 ok·partial / 1 failed·시작 거절·실행 중 오류 / 4 준비 문제(Ctrl+C면 그 중단 코드). 파이썬을 못 찾으면 아무 명령도 실행하지 않고 4(`run-batches.ps1`의 2와 다르다). 명령이 종료 코드 없이 끝나면 1 |
 
 `run-batches.ps1`은 `tag run`의 종료 코드만 본다: 0이면 다음 배치, 4면 즉시 멈춤, 그 밖이면 같은 작업자 ID로 `tag reset-worker` 후 새 작업자 ID로 재시도. 종료 코드 0·1·4로 끝날 때 출력의 마지막 줄은 `Summary: success=<n> failed_attempts=<n>`이다(2·3은 오류 문구로 끝난다).

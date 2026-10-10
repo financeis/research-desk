@@ -29,6 +29,7 @@ UNDO_UNKNOWN = {'detail': '되돌릴 작업이 없거나 서버가 재시작되�
 NOT_ANALYZED = {'detail': '선택한 두 보고서를 먼저 분석해 주세요.'}
 NO_PUBLIC_BUILD_REASON = '아직 공개된 유사도 계산 결과가 없습니다(python -m research_desk peers build)'
 OPENAI_KEY_REASON = 'OPENAI_API_KEY가 설정되지 않았습니다'
+NO_RANKED_DAY_REASON = '아직 순위를 매긴 날이 없습니다(python -m research_desk flows update)'
 
 
 def not_ready(area: str, reason: str) -> dict:
@@ -61,6 +62,8 @@ SPEC_ROUTES = {
     ('GET', '/api/stocks/{code}/peers'),     # peers (its window's web_router())
     ('POST', '/api/peers/search'),
     ('GET', '/api/freshness'),               # freshness
+    ('GET', '/api/flows'),                   # flows (its window's web_router())
+    ('GET', '/api/stocks/{code}/flows'),
     ('GET', '/'),
     ('GET', '/assets/*'),
     ('GET', '/openapi.json'),
@@ -213,9 +216,22 @@ class FakeFreshness:
     ANSWER = {
         'prices': {'as_of': '2026-10-08', 'last_run_at': '2026-10-08T18:30:00+09:00',
                    'last_run_status': 'ok', 'stale': False, 'note': None},
+        'flows': {'as_of': '2026-10-08', 'last_run_at': '2026-10-08T18:45:00+09:00',
+                  'last_run_status': 'ok', 'stale': False, 'note': None},
         'reports': {'latest_at': '2026-10-08T09:12:00+09:00', 'stale': False},
         'checked_at': '2026-10-08T20:00:00+09:00',
     }
 
     def freshness(self) -> dict:
         return self.ANSWER
+
+
+class FakeFlows:
+    """Echoes what the flows router hands its service."""
+
+    def ranking(self, investor: str, min_cap: int, day, sort: str, limit: int) -> dict:
+        return {'investor': investor, 'min_cap': min_cap, 'date': day.isoformat() if day else None,
+                'sort': sort, 'limit': limit}
+
+    def stock_flows(self, code: str, period: str) -> dict:
+        return {'code': code, 'period': period}

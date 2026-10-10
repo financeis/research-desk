@@ -1,11 +1,13 @@
-"""features.prices window: ``snapshots(codes)`` and ``latest_run()`` (spec §8, §12.1, §12.3).
+"""features.prices window: ``snapshots(codes)``, ``latest_run()`` and
+``daily_closes(codes, since)`` (docs/business-rules.md, 주가 스냅샷).
 
 The DB is the in-memory FakeSupabase handed out by core.db.supabase_client; without a test's
 setup core.db.supabase_client refuses. Checked: the window shape (§12.1 price + market, percent),
 codes without a snapshot left out, chunked reads, the latest run with the latest successful
-as_of, readiness (NotReady("주가", …), retried on the next call, .env values picked up, prepared
-once), creating the service reads nothing, and importing the window loads no web, HTTP, KIS or
-MongoDB package.
+as_of; the stored adjusted closes from a day on (oldest first, only codes with rows, in the order
+asked, a plain string refused, paged over 1000 rows); readiness (NotReady("주가", …), retried on
+the next call, .env values picked up, prepared once), creating the service reads nothing, and
+importing the window loads no web, HTTP, KIS or MongoDB package.
 """
 from __future__ import annotations
 
@@ -13,7 +15,7 @@ import subprocess
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -114,6 +116,75 @@ def test_an_empty_snapshot_table_gives_an_empty_answer(db):
     assert prices.snapshots(["005930"]) == {}
 
 
+# ── daily_closes ─────────────────────────────────────────────────────────────
+
+def close(code, day, value):
+    return {"stock_code": code, "trade_date": day, "close": value}
+
+
+def test_daily_closes_give_the_stored_closes_from_since_oldest_first(db):
+    for row in (close("005930", "2026-10-08", 61000), close("005930", "2026-10-06", 60500),
+                close("005930", "2026-10-02", 59000), close("005930", "2026-10-07", 60000),
+                close("080220", "2026-10-08", 25000), close("000660", "2026-09-30", 170000)):
+        db.add_daily(row)
+    found = prices.daily_closes(["080220", "000660", "005930", "080220", "123456"], "2026-10-06")
+    assert found == {
+        "080220": [{"date": "2026-10-08", "close": 25000}],
+        "005930": [{"date": "2026-10-06", "close": 60500}, {"date": "2026-10-07", "close": 60000},
+                   {"date": "2026-10-08", "close": 61000}],
+    }   # 000660 has rows only before since and 123456 none: left out; each code once, in the order asked
+    assert list(found) == ["080220", "005930"]
+
+
+def test_daily_closes_take_since_as_a_date_too(db):
+    db.add_daily(close("005930", "2026-10-06", 60500))
+    db.add_daily(close("005930", "2026-10-05", 60100))
+    assert prices.daily_closes(["005930"], date(2026, 10, 6)) == {"005930": [{"date": "2026-10-06", "close": 60500}]}
+    assert db.queries("stock_price_daily", "select")[0].filter_values("gte", "trade_date") == ["2026-10-06"]
+
+
+def test_daily_closes_give_whole_won(db):
+    db.add_daily(close("005930", "2026-10-06", 60500))
+    [day] = prices.daily_closes(["005930"], "2026-10-01")["005930"]
+    assert isinstance(day["close"], int) and isinstance(day["date"], str)
+
+
+def test_daily_closes_page_through_more_than_1000_rows(db):
+    first = date(2024, 1, 1)
+    for code in ("005930", "000660"):
+        for n in range(700):
+            db.add_daily(close(code, (first + timedelta(days=n)).isoformat(), 1000 + n))
+    found = prices.daily_closes(["005930", "000660"], first)
+    assert [len(found[code]) for code in ("005930", "000660")] == [700, 700]
+    assert found["005930"][0] == {"date": "2024-01-01", "close": 1000}
+    assert found["005930"][-1] == {"date": (first + timedelta(days=699)).isoformat(), "close": 1699}
+    reads = db.queries("stock_price_daily", "select")
+    assert [(q.offset, q.limit_n) for q in reads] == [(0, 1000), (1000, 1000)]
+    assert len({id(q) for q in reads}) == 2   # a new query for each page
+
+
+def test_daily_closes_of_no_codes_need_no_db():
+    assert prices.daily_closes([], "2026-10-01") == {}
+    assert prices.daily_closes(["", None], "2026-10-01") == {}
+
+
+def test_daily_closes_refuse_one_plain_string(db):
+    with pytest.raises(TypeError):
+        prices.daily_closes("005930", "2026-10-01")
+    assert db.made == []
+
+
+@pytest.mark.parametrize("since,error", [(None, TypeError), ("2026/10/01", ValueError)])
+def test_daily_closes_refuse_a_since_that_is_not_a_day(db, since, error):
+    with pytest.raises(error):
+        prices.daily_closes(["005930"], since)
+    assert db.made == []
+
+
+def test_an_empty_history_gives_an_empty_answer(db):
+    assert prices.daily_closes(["005930"], "2026-10-01") == {}
+
+
 # ── latest_run ───────────────────────────────────────────────────────────────
 
 def run(run_id, day, status, as_of=None, started=None):
@@ -169,7 +240,8 @@ def test_the_run_time_is_given_in_utc_whatever_offset_the_db_uses(db):
 @pytest.mark.parametrize("missing", ["SUPABASE_URL", "SUPABASE_SERVICE_KEY"])
 def test_without_db_settings_the_window_is_not_ready_until_they_come(db, monkeypatch, missing):
     monkeypatch.delenv(missing)
-    for call in (lambda: prices.snapshots(["005930"]), prices.latest_run):
+    for call in (lambda: prices.snapshots(["005930"]), prices.latest_run,
+                 lambda: prices.daily_closes(["005930"], "2026-10-01")):
         with pytest.raises(NotReady) as excinfo:
             call()
         assert (excinfo.value.area, excinfo.value.reason) == ("주가", DB_REASON)
@@ -178,6 +250,7 @@ def test_without_db_settings_the_window_is_not_ready_until_they_come(db, monkeyp
     monkeypatch.setenv(missing, URL if missing == "SUPABASE_URL" else KEY)
     assert prices.latest_run() is None   # tried again on the next call
     assert prices.snapshots(["005930"]) == {}
+    assert prices.daily_closes(["005930"], "2026-10-01") == {}
     assert db.made == [(URL, KEY)]       # prepared once, then kept
 
 
@@ -209,6 +282,7 @@ def test_creating_the_service_reads_nothing():
 def test_the_window_names():
     assert prices.snapshots is service_module.snapshots
     assert prices.latest_run is service_module.latest_run
+    assert prices.daily_closes is service_module.daily_closes
     assert service_module.AREA == "주가"
 
 
@@ -230,7 +304,7 @@ HEAVY = ("fastapi", "starlette", "uvicorn", "httpx", "httpcore", "supabase", "po
 def test_importing_the_window_loads_no_web_http_kis_or_mongo_package():
     """``cli.py`` imports every command's window for every run, so the window stays light."""
     code = ("import sys, research_desk.features.prices as prices\n"
-            "assert callable(prices.snapshots) and callable(prices.latest_run)\n"
+            "assert callable(prices.snapshots) and callable(prices.latest_run) and callable(prices.daily_closes)\n"
             f"print(sorted(m for m in {HEAVY!r} if m in sys.modules))\n")
     result = subprocess.run([sys.executable, "-c", code], cwd=REPOSITORY, capture_output=True,
                             text=True, timeout=120)

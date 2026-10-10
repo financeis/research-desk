@@ -1,4 +1,4 @@
-/* The status line on top of every screen (spec §12.5): price and report data dates. */
+/* The status line on top of every screen (docs/contracts.md, GET /api/freshness): price, flows and report data dates. */
 
 .status-line {
   display: flex;

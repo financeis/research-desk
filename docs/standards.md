@@ -30,25 +30,25 @@
 | `R8 입구` | `cli.py`·`__main__.py`는 각 칸의 등록 함수와 `core`·`domain` 함수를 쓴다. 기능은 공개 창구로만 쓴다. 다른 칸은 `cli`·`__main__`을 import하지 않는다 |
 | `R9 외부 도구` | `supabase`, `asyncpg`, `openai`, `anthropic`, `dotenv`, `fitz`/`pymupdf`, `pymongo`/`bson`, `httpx`는 `core` 안에서만 import한다. `telethon`은 `collector`, `langgraph`는 `tagger` 안에서만 쓴다 |
 | `R10 옛 코드` | `langgraph_tagger`와 옛 루트 모듈 이름(`collector`, `config`, `storage`, `telegram_client`, `main`)을 최상위 이름으로 import하지 않는다(테스트 포함) |
-| `R11 표 주인` | `.table('<표>')` 호출(별칭 `.from_('<표>')` 포함)과, 문서 설명문이 아닌 문자열 안의 `FROM`/`UPDATE`/`INTO`/`JOIN <표>`는 그 표의 주인 칸에만 있다. `reports` → `collector`, `tagger`, `features/review`, `features/reports` / `failed_attempts` → `collector` / `report_summaries` → `features/analysis` / `stock_price_snapshot`·`price_update_runs` → `features/prices` / `company_profiles`·`company_segments`·`company_embeddings`·`segment_embeddings`·`peer_builds` → `features/peers` |
+| `R11 표 주인` | `.table('<표>')` 호출(별칭 `.from_('<표>')` 포함)과, 문서 설명문이 아닌 문자열 안의 `FROM`/`UPDATE`/`INTO`/`JOIN <표>`는 그 표의 주인 칸에만 있다. `reports` → `collector`, `tagger`, `features/review`, `features/reports` / `failed_attempts` → `collector` / `report_summaries` → `features/analysis` / `stock_price_snapshot`·`price_update_runs`·`stock_price_daily` → `features/prices` / `company_profiles`·`company_segments`·`company_embeddings`·`segment_embeddings`·`peer_builds` → `features/peers` / `investor_flow_daily`·`investor_flow_runs`·`investor_flow_days`·`investor_flow_stocks` → `features/flows` |
 
 - **공개 창구는 `__init__.py`가 직접 묶은 이름뿐이다.** `from .router import router`처럼 명시적으로 묶은 이름만 다른 칸이 쓸 수 있다. `from .x import *`나 `__all__`에만 적은 이름은 공개로 치지 않는다.
 - 상대 import(`from . import x`)는 실제 모듈 이름으로 풀어서 같은 규칙으로 검사한다.
-- 지금의 기능 의존 방향: `reports → analysis`, `compare → reports, analysis`, `coverage → reports`, `review → coverage`, `peers → coverage, prices, reports`, `freshness → prices, reports`. `companies`·`analysis`·`prices`는 다른 기능을 쓰지 않는다. 새 연결은 순환을 만들지 않아야 한다(함수 안의 import도 의존으로 센다).
+- 지금의 기능 의존 방향: `reports → analysis`, `compare → reports, analysis`, `coverage → reports`, `review → coverage`, `peers → coverage, prices, reports`, `flows → prices, coverage`, `freshness → prices, flows, reports`. `companies`·`analysis`·`prices`는 다른 기능을 쓰지 않는다. 새 연결은 순환을 만들지 않아야 한다(함수 안의 import도 의존으로 센다).
 - 새 표가 생기면 주인 기능 하나를 정하고, 나머지 기능은 그 기능의 공개 창구로 읽는다(검사 규칙의 주인 목록에도 더한다).
-- DB 함수 `match_company_profiles`·`match_company_segments`는 `features/peers`만 부른다. 구조 검사는 `.rpc(…)` 호출을 보지 않으므로 리뷰에서 지킨다.
+- DB 함수 `match_company_profiles`·`match_company_segments`는 `features/peers`만, `rank_investor_flows`·`investor_flow_coverage`는 `features/flows`만 부른다. 구조 검사는 `.rpc(…)` 호출을 보지 않으므로 리뷰에서 지킨다.
 - 리포트 행은 `features/reports` 창구로만 읽고, 창구의 모든 읽기 결과는 같은 16열(`EXPECTED_COLS`, 마지막이 `publisher_type`)이다. 다른 기능은 이 열을 이름으로 꺼내 쓰므로(커버리지 집계, 리포트 수 세기) 열을 빼거나 이름을 바꾸면 그쪽 계산이 깨진다. 열을 바꿀 때는 리포트 기능의 열 목록 테스트와 다른 기능 테스트의 행 모양(`coverage/tests/rows.py` 등)을 함께 고친다.
 
 ## 칸 안의 모양
 
 - 기능 하나 = `research_desk/features/<기능>/` 폴더 하나. 칸 이름은 역할이 같다: `router.py`(웹 주소), `service.py`(업무 처리), `store.py`(DB 읽기·쓰기), `logic.py`(DB·네트워크 없이 테스트할 수 있는 계산), `jobs.py`(백그라운드 명령, 필요할 때만), `settings.py`(기능 전용 설정), `tests/`. 필요 없는 칸은 만들지 않는다.
 - **새 기능 등록은 두 곳뿐이다.** 웹 주소가 있으면 `research_desk/web/app.py`의 `FEATURES` 목록에 한 줄(조립부가 `feature_router`로 붙인다). 명령이 있으면 그 기능의 `jobs.py`에 `register(subparsers)`를 두고 창구에서 `register_jobs`로 묶은 뒤, `research_desk/cli.py`에 창구 import 한 줄과 `build_parser` 등록 한 줄. 웹 조립부와 명령 입구에는 업무 처리를 넣지 않는다.
-- 명령 등록 함수와 그 모듈의 최상위 import는 가볍게 둔다. `python -m research_desk`는 명령마다(명령 없이, `--help`만 해도) 모든 등록 모듈(`collector.cli`, `tagger.cli`, `web.server`)과 명령이 있는 기능의 창구(`features.prices`, `features.peers`)를 import한다. 무거운 것은 그 명령이 실제로 돌 때 함수 안에서 import한다. `research_desk/tests/test_cli.py`가 인자 없는 실행에서 `fastapi`·`uvicorn`·`research_desk.web.app`·`langgraph`·`pymongo`·`research_desk.features.peers.router`·`research_desk.features.peers.service`가 올라오지 않는지 새 프로세스로 확인한다. 이 확인을 지우거나 느슨하게 하지 않는다. 반면 Supabase·asyncpg·Anthropic·OpenAI 라이브러리는 `tagger.cli`가 맨 위에서 `core.db`·`core.llm`을 불러오므로 지금 모든 명령에서 올라온다(테스트가 막지 않는다).
-- **명령이 있는 기능의 창구.** 창구 최상위에는 FastAPI를 불러오지 않는 이름만 묶는다: `register_jobs`와 다른 기능이 쓸 함수. 그 기능에 웹 주소가 있으면 `router` 대신 `web_router()`를 둔다 — 불릴 때 안에서 `from .router import router`를 하고 돌려준다. 위반하면(창구가 부르는 모듈 최상위에 FastAPI·`HTTPException`·라우터·서비스·pymongo를 두면) 위 입구 확인이 실패해 커밋이 막힌다. 명령이 없는 기능은 그대로 창구에서 `from .router import router`를 묶는다.
+- 명령 등록 함수와 그 모듈의 최상위 import는 가볍게 둔다. `python -m research_desk`는 명령마다(명령 없이, `--help`만 해도) 모든 등록 모듈(`collector.cli`, `tagger.cli`, `web.server`)과 명령이 있는 기능의 창구(`features.prices`, `features.peers`, `features.flows`)를 import한다. 무거운 것은 그 명령이 실제로 돌 때 함수 안에서 import한다. `research_desk/tests/test_cli.py`가 인자 없는 실행에서 `fastapi`·`uvicorn`·`research_desk.web.app`·`langgraph`·`pymongo`·`research_desk.features.peers.router`·`research_desk.features.peers.service`·`research_desk.features.flows.router`가 올라오지 않는지 새 프로세스로 확인한다. 이 확인을 지우거나 느슨하게 하지 않는다. 반면 Supabase·asyncpg·Anthropic·OpenAI 라이브러리는 `tagger.cli`가 맨 위에서 `core.db`·`core.llm`을 불러오므로 지금 모든 명령에서 올라온다(테스트가 막지 않는다).
+- **명령이 있는 기능의 창구.** 창구 최상위에는 FastAPI를 불러오지 않는 이름만 묶는다: `register_jobs`와 다른 기능이 쓸 함수. 그 기능에 웹 주소가 있으면(`peers`, `flows`) `router` 대신 `web_router()`를 둔다 — 불릴 때 안에서 `from .router import router`를 하고 돌려준다. 다른 기능의 창구가 FastAPI를 부르면(예: 라우터를 묶은 `coverage` 창구) 그 창구도 함수 안에서 import한다(`flows`가 `coverage`를 그렇게 쓴다). 위반하면(창구가 부르는 모듈 최상위에 FastAPI·`HTTPException`·라우터·서비스·pymongo를 두면) 위 입구 확인이 실패해 커밋이 막힌다. 명령이 없는 기능은 그대로 창구에서 `from .router import router`를 묶는다.
 
 ## 기능 준비와 오류 응답
 
-- 기능은 처음 쓰일 때 준비한다(설정·파일·연결 확인). 준비에 실패하면 `core.settings.NotReady(<기능 이름>, <이유>)`를 낸다. 기능 이름은 한국어로 고정이다: `기업 목록`(companies), `리포트`(reports), `분석`(analysis), `비교`(compare), `커버리지`(coverage), `검토`(review), `주가`(prices), `유사 기업`(peers), `자료 기준일`(freshness). 새 기능도 고정 이름을 정한다.
+- 기능은 처음 쓰일 때 준비한다(설정·파일·연결 확인). 준비에 실패하면 `core.settings.NotReady(<기능 이름>, <이유>)`를 낸다. 기능 이름은 한국어로 고정이다: `기업 목록`(companies), `리포트`(reports), `분석`(analysis), `비교`(compare), `커버리지`(coverage), `검토`(review), `주가`(prices), `유사 기업`(peers), `수급`(flows), `자료 기준일`(freshness). 새 기능도 고정 이름을 정한다.
 - 이유 문구는 한국어 고정 문장이다. 키 이름은 넣어도 되지만 파일 경로·키 값·오류 추적은 넣지 않는다.
 - 준비에 실패한 기능은 실패를 기억하지 않는다. 다음 요청 때 다시 준비한다. 준비가 끝난 뒤 생긴 예기치 못한 오류(DB 일시 장애 등)는 `NotReady`로 바꾸지 않는다 — 웹 조립부가 일반 503 문구로 낸다.
 - 다른 기능의 공개 창구에서 온 `NotReady`는 바꾸지 않고 그대로 올린다(실패한 기능의 이름이 그대로 보여야 한다).
@@ -57,8 +57,8 @@
 ## 명령과 종료 코드
 
 - 모든 실행은 저장소 루트에서 `python -m research_desk <명령>`이다. `sessions/`와 `.env`의 상대 경로가 현재 폴더 기준이다.
-- 종료 코드 4는 "준비 문제"(다시 실행해도 저절로 풀리지 않는 상태: 설정 누락, codex CLI 없음, 종목표를 못 읽음, 종목표 버전 불일치, `stocks set-version --as-of`의 잘못된 날짜, MongoDB 접속 불가, 사업보고서 문서 없음, `tag requeue`의 발행처 사전을 못 읽음·`--unreadable`인데 분류 모델이 그림을 받지 못함·`--apply`인데 프로세스 목록을 못 읽음)다. `tag escalate --since`의 형식 오류는 4가 아니라 1이다. `tag`·`stocks`·`prices`·`peers` 명령과 새로 붙는 명령이 쓴다. 4로 끝날 때는 아무 일도 하지 않은 상태여야 한다(분류 명령은 어떤 행도 가져가거나 되돌리지 않고, `prices update`는 KIS·DB를 부르지 않고, `peers build`는 빌드를 시작하지 않는다). `collect`만 예외로 설정 누락이 1이다.
-- 기다리면 저절로 풀리는 상태(분류 작업 진행 중, 다른 유사도 계산 진행 중, `tag requeue --apply` 때 이 PC에서 백필·재처리·수집·웹앱이 돌고 있음)와 숫자 설정의 형식 오류는 4가 아니라 1이다. 이때도 아무것도 바꾸지 않고 무엇을 기다리거나 끌지 stderr 한 줄로 알린다.
+- 종료 코드 4는 "준비 문제"(다시 실행해도 저절로 풀리지 않는 상태: 설정 누락, codex CLI 없음, 종목표를 못 읽음, 종목표 버전 불일치, `stocks set-version --as-of`의 잘못된 날짜, MongoDB 접속 불가, 사업보고서 문서 없음, `tag requeue`의 발행처 사전을 못 읽음·`--unreadable`인데 분류 모델이 그림을 받지 못함·`--apply`인데 프로세스 목록을 못 읽음)다. `tag escalate --since`의 형식 오류는 4가 아니라 1이다. `tag`·`stocks`·`prices`·`flows`·`peers` 명령과 새로 붙는 명령이 쓴다. 4로 끝날 때는 아무 일도 하지 않은 상태여야 한다(분류 명령은 어떤 행도 가져가거나 되돌리지 않고, `prices update`·`flows update`는 KIS·DB를 부르지 않고, `peers build`는 빌드를 시작하지 않는다). `collect`만 예외로 설정 누락이 1이다.
+- 기다리면 저절로 풀리는 상태(분류 작업 진행 중, 다른 유사도 계산 진행 중, `flows update` 때 주가 갱신이나 다른 수급 갱신이 진행 중, `tag requeue --apply` 때 이 PC에서 백필·재처리·수집·웹앱이 돌고 있음)와 숫자 설정의 형식 오류는 4가 아니라 1이다. 이때도 아무것도 바꾸지 않고 무엇을 기다리거나 끌지 stderr 한 줄로 알린다.
 - `tag requeue`는 DB에 닿은 뒤의 실패를 traceback 대신 stderr 한 줄과 1로 끝내고 stdout을 비운다(백업을 못 씀, 되돌린 행 수가 다시 확인한 행 수와 다름, 그 밖의 오류).
 - 인자가 없거나 틀리면 사용법을 보여 주고 2, `--help`는 0이다.
 - 새로 만드는 사용자 문구는 한국어로 쓴다. 이미 있는 영어 명령 출력(`<NAME> is required`, `Config error: Missing required env var: <NAME>`, `codex CLI not found for model <모델>`, JSON 보고의 키)은 바꾸지 않는다 — 스크립트와 운영자가 그 문구를 본다.

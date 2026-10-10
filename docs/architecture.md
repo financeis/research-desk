@@ -2,7 +2,7 @@
 
 ## 전체 모양
 
-세 단계가 Supabase(클라우드 Postgres)의 `reports` 표를 차례로 채우고 읽는다. 단계 사이는 함수 호출로 이어지지 않는다. 표의 `tagging_status` 값이 다음 단계의 입력이다. 여기에 두 일괄 작업이 따로 붙는다: 매일 주가를 받는 `prices update`와, 1년에 한 번 사업보고서로 유사 기업 자료를 만드는 `peers build`. 웹앱은 두 작업이 저장한 표만 읽는다.
+세 단계가 Supabase(클라우드 Postgres)의 `reports` 표를 차례로 채우고 읽는다. 단계 사이는 함수 호출로 이어지지 않는다. 표의 `tagging_status` 값이 다음 단계의 입력이다. 여기에 세 일괄 작업이 따로 붙는다: 매일 주가를 받는 `prices update`, 그 바로 뒤에 투자자별 수급을 받아 250일 순위를 매기는 `flows update`, 1년에 한 번 사업보고서로 유사 기업 자료를 만드는 `peers build`. 웹앱은 세 작업이 저장한 표만 읽는다.
 
 ```
 텔레그램 채널 ──(Telethon, 세션 파일 sessions/<이름>)──▶ collect
@@ -15,9 +15,13 @@ reports (pending) ──(Postgres 직접 연결 SUPABASE_DB_URL, asyncpg 풀 최
 
 reports (auto / review_needed) ──(같은 직접 연결)──▶ tag requeue (조건에 맞는 행 고르기, AI 없음)
    tag requeue --apply ──▶ 백업 CSV backups/requeue/ ──(한 트랜잭션)──▶ reports (pending) ──▶ 다음 백필이 다시 분류
-윈도우 작업 스케줄러 (평일 장 마감 뒤) ──▶ scripts/run-prices.ps1 ──▶ prices update
-   prices update ──(HTTPS, 앱키·시크릿 → 실행마다 접근 토큰 한 번)──▶ KIS Open API (수정주가 일봉, 현재가)
-   prices update ──(Supabase REST)──▶ stock_price_snapshot (종목당 한 행) / price_update_runs
+윈도우 작업 스케줄러 (평일 장 마감 뒤) ──▶ scripts/run-prices.ps1 ──▶ prices update ──(종료 코드 0일 때만)──▶ flows update
+   prices update ──(HTTPS, 앱키·시크릿. 접근 토큰은 masterdb와 같이 쓰는 토큰 파일에서, 없으면 실행마다 한 번)──▶ KIS Open API (수정주가 일봉, 현재가)
+   prices update ──(Supabase REST)──▶ stock_price_snapshot (종목당 한 행) / stock_price_daily (수정 종가 1년치) / price_update_runs
+   flows update ──(HTTPS, 같은 앱키·같은 토큰 파일)──▶ KIS Open API (투자자별 일별 순매수, KRX)
+   flows update ──(주가 창구)──▶ 기준 거래일의 시총 (stock_price_snapshot)
+   flows update ──(Supabase REST)──▶ investor_flow_daily (원자료) / investor_flow_stocks / investor_flow_runs / investor_flow_days
+   flows update ──(RPC: rank_investor_flows / investor_flow_coverage)──▶ Supabase (250일 순위는 DB 안에서 계산)
 
 로컬 MongoDB FS.A001_v2 (별도 저장소의 DART 수집 프로그램이 채움) ──(pymongo, 읽기만)──▶ peers build (연 1회, 사람이 실행)
    peers build ──▶ AI (회사마다 사업 요약 카드) + OpenAI 임베딩 (1536차원)
@@ -25,22 +29,22 @@ reports (auto / review_needed) ──(같은 직접 연결)──▶ tag requeue
    peers build ──(리포트 창구, 개수 조회)──▶ reports (분류 작업이 도는 중인지)
 
 브라우저 ──(HTTP 127.0.0.1:8520)──▶ web (FastAPI) ──▶ features/*
-   features ──(Supabase REST, 서비스 키)──▶ reports 읽기·검토 쓰기, report_summaries 읽기·쓰기, 주가·유사 기업 표 읽기
+   features ──(Supabase REST, 서비스 키)──▶ reports 읽기·검토 쓰기, report_summaries 읽기·쓰기, 주가·유사 기업·수급 표 읽기
    features/peers ──(RPC: match_company_profiles / match_company_segments, pgvector 정확 탐색)──▶ Supabase
    features ──▶ 로컬 PDF (보기·미리보기·분석 입력) ──▶ LLM (분석·비교 버튼을 눌렀을 때만)
    features/peers ──▶ OpenAI 임베딩 (테마 검색의 새 질의 하나)
 ```
 
-- **수집기·웹앱·두 일괄 작업은 Supabase REST**(supabase-py, `SUPABASE_URL` + `SUPABASE_SERVICE_KEY`)로, **분류기는 Postgres 직접 연결**(`SUPABASE_DB_URL`)로 DB에 닿는다. 분류기만 직접 연결을 쓰는 이유: 가져가기(`FOR UPDATE SKIP LOCKED`)와 오래된 잠금 되돌리기가 한 문장 안에서 원자적으로 돌아야 하는데 REST로는 그렇게 쓸 수 없다. `tag requeue`의 "잠그기 → 다시 확인 → 되돌리기 → 건수 확인 → 안 맞으면 취소"도 한 트랜잭션이어야 하고, 분류된 행 전체를 한 번에 읽어야 해서(REST는 1000행에서 끊긴다) 같은 직접 연결을 쓴다.
+- **수집기·웹앱·세 일괄 작업은 Supabase REST**(supabase-py, `SUPABASE_URL` + `SUPABASE_SERVICE_KEY`)로, **분류기는 Postgres 직접 연결**(`SUPABASE_DB_URL`)로 DB에 닿는다. 분류기만 직접 연결을 쓰는 이유: 가져가기(`FOR UPDATE SKIP LOCKED`)와 오래된 잠금 되돌리기가 한 문장 안에서 원자적으로 돌아야 하는데 REST로는 그렇게 쓸 수 없다. `tag requeue`의 "잠그기 → 다시 확인 → 되돌리기 → 건수 확인 → 안 맞으면 취소"도 한 트랜잭션이어야 하고, 분류된 행 전체를 한 번에 읽어야 해서(REST는 1000행에서 끊긴다) 같은 직접 연결을 쓴다.
 - **AI는 네 곳에서만 부른다.**
   - 분류기: 행마다, 반복 실행. 글자 없는 PDF는 1쪽 그림을 함께 보낸다.
   - 웹앱의 재무 분석·비교 해석문: 사용자가 버튼을 눌렀을 때만, 웹 서버 전체 동시 2개.
   - 유사도 계산(`peers build`): 회사마다 사업 요약 카드 추출(동시 2개)과 임베딩(100개씩).
   - 웹앱의 테마 검색: 새 질의마다 임베딩 하나(같은 질의는 캐시, 유사 기업 기능의 동시 2개 자리).
-  - 목록 보기·선택·커버리지·검토·유사 기업 탭·상태 줄·`tag requeue`는 AI를 부르지 않는다. 유사 기업 탭은 저장된 임베딩으로 DB 함수가 계산한다.
-- **바깥 데이터마다 가져오는 명령은 하나뿐이다.** KIS는 `prices update`만, MongoDB는 `peers build`만 부른다. 웹앱은 둘 다 부르지 않고 저장된 표만 읽는다. MongoDB의 사업보고서 텍스트는 이 저장소 밖의 DART 수집 프로그램이 채우고, 이 앱은 쓰지 않는다.
+  - 목록 보기·선택·커버리지·검토·유사 기업 탭·수급 갱신·수급 랭킹·수급 탭·상태 줄·`tag requeue`는 AI를 부르지 않는다. 유사 기업 탭은 저장된 임베딩으로 DB 함수가 계산한다.
+- **바깥 데이터를 가져오는 명령은 정해져 있다.** KIS는 `prices update`와 `flows update`만 부르고, 두 명령은 같은 예약 작업 안에서 차례로 돈다(같은 앱키·같은 토큰 파일. KIS를 쓰는 시간대는 하루 한 번). MongoDB는 `peers build`만 부른다. 웹앱은 KIS도 MongoDB도 부르지 않고 저장된 표만 읽는다. MongoDB의 사업보고서 텍스트는 이 저장소 밖의 DART 수집 프로그램이 채우고, 이 앱은 쓰지 않는다.
 - **PDF 파일은 로컬 디스크에만 있다.** DB에는 저장 폴더 기준 상대 경로(`file_path`)만 있다. 그래서 분류기와 웹앱은 수집기와 같은 PC, 같은 `STORAGE_BASE_DIR`에서 돌아야 한다.
-- **화면(`frontend/`, React + Vite)** 은 빌드 결과(`frontend/dist`)를 웹 서버가 `/`와 `/assets`로 내준다. 개발 중에는 Vite 개발 서버(5173)가 `/api`를 8520으로 넘긴다. 화면은 `/api/*` 주소와 응답 모양에만 의존하고 파이썬 코드를 모른다. 유사 기업 탭·테마 검색은 `frontend/src/peers/`, 상태 줄은 `frontend/src/freshness/`에 있다.
+- **화면(`frontend/`, React + Vite)** 은 빌드 결과(`frontend/dist`)를 웹 서버가 `/`와 `/assets`로 내준다. 개발 중에는 Vite 개발 서버(5173)가 `/api`를 8520으로 넘긴다. 화면은 `/api/*` 주소와 응답 모양에만 의존하고 파이썬 코드를 모른다. 유사 기업 탭·테마 검색은 `frontend/src/peers/`, 수급 랭킹·수급 탭은 `frontend/src/flows/`, 상태 줄은 `frontend/src/freshness/`에 있다.
 
 ## 대표 흐름 — 리포트 분석 버튼 (`POST /api/reports/{rid}/analyze`)
 
@@ -61,7 +65,17 @@ reports (auto / review_needed) ──(같은 직접 연결)──▶ tag requeue
 4. `coverage.report_counts(시드+피어, 365일)` → 리포트 창구 `rows_for_stocks`(분석 대상 행, 종목 배열 겹침, 1000행씩)로 증권사 리포트 수. `prices.snapshots(시드+피어)` → 주가 스냅샷.
 5. 시드의 초과수익률이 +10%p 이상이면 피어마다 반응 판정, 후보 여섯 조건 판정 → 응답. AI는 부르지 않는다.
 
-상태 줄(`GET /api/freshness`)은 요청마다 `prices.latest_run()`과 `reports.latest_report_sent_at()`을 읽어 밀림을 판정한다. 자기 표·설정이 없다.
+## 대표 흐름 — 매일 수급 갱신과 수급 랭킹 (`flows update` → `GET /api/flows`)
+
+1. 예약 작업 → `scripts/run-prices.ps1` → `prices update`(주가 스냅샷과 수정 종가 이력) → 종료 코드가 0일 때만 `flows update`. 주가 갱신이 실패한 날은 수급을 건너뛴다(토큰을 못 받은 날 수급이 토큰을 또 묻지 않게).
+2. `flows update`: 준비 확인(DB 설정, KIS 키, 종목표. 없으면 종료 코드 4) → 주가 갱신이나 다른 수급 갱신이 도는 중이면 거절(1) → 실행 기록 `running` → 접근 토큰 한 번(토큰 파일) → 기준 종목 삼성전자(005930)를 최근 310거래일까지 거슬러 받아 거래일 달력을 만든다(이번 실행의 KIS 응답만 씀) → 종목마다 기준일까지 30거래일 응답 한 번, 보관 범위(310거래일)에 빈 곳이 있으면 더 오래된 응답을 더 받음 → 한 종목을 다 받으면 그 종목의 원자료를 한 번에 저장(순위·시총 칸은 보내지 않음).
+3. `ok`·`partial`이면 기준 거래일 D 하루의 순위를 매긴다: `prices.snapshots()`에서 기준일이 D인 스냅샷의 시총만 모아 DB 함수 `rank_investor_flows(D, 시총 목록)`를 한 번 부름 → DB가 종목마다 최근 250행 창에서 11개 주체의 순위와 그날 시총을 쓰고 고정(이미 매긴 행은 다시 쓰지 않음) → 매긴 종목이 있으면 D를 순위 매긴 날 목록에 넣음 → 470일보다 오래된 원자료(보관 범위 첫날 이후는 남김)와 최근 60개 밖의 날을 지움. `failed`면 순위도 정리도 하지 않는다.
+4. 브라우저 → `web`: 허용 호스트 검사 → `features/flows` 라우터(창구의 `web_router()`로 붙음). 값이 틀리면 아무것도 준비하지 않고 422.
+5. `features/flows` 서비스: 처음 쓰일 때 DB 연결과 종목표를 준비(실패하면 "수급 기능 사용 불가" 503) → 요청마다 순위 매긴 날 목록을 읽음(없으면 503, 목록에 없는 날이면 404) → 그날 행을 읽어 그룹 거르기(고른 주체 순매수 > 0, 그날 시총 ≥ 하한, 순위 있음) → 250일 순위 점수와 시총 대비 % 백분위의 평균으로 정렬 → `coverage.report_counts(그 종목들, 365일)`로 리포트 수 → 응답. KIS도 AI도 부르지 않는다.
+
+기업 화면 수급 탭(`GET /api/stocks/{code}/flows`)은 그 종목의 최근 250행에서 가장 늦게 순위를 매긴 날의 11개 주체 표와 기간만큼의 일별 순매수를 만들고, 주가선은 `prices.daily_closes()`로 받는다.
+
+상태 줄(`GET /api/freshness`)은 요청마다 `prices.latest_run()`, `flows.latest_run()`, `reports.latest_report_sent_at()`을 차례로 읽어 밀림을 판정한다. 자기 표·설정이 없다.
 
 ## 코드 칸 지도 (`research_desk/`)
 
@@ -78,16 +92,18 @@ reports (auto / review_needed) ──(같은 직접 연결)──▶ tag requeue
 | `features/compare` | 두 보고서 비교 | `core`, `domain`, 기능 `reports`·`analysis` |
 | `features/coverage` | 커버리지 집계, 집계용 행 캐시, 종목별 증권사 리포트 수 세기 | `core`, `domain`, 기능 `reports` |
 | `features/review` | 수동 검토·되돌리기 | `core`, `domain`, 기능 `coverage` (처리 뒤 캐시 비우기) |
-| `features/prices` | 매일 주가 스냅샷 명령(`prices update`), 주가 표 두 개, 다른 기능이 읽는 주가 창구. 웹 주소 없음 | `core`, `domain` |
+| `features/prices` | 매일 주가 스냅샷 명령(`prices update`), 주가 표 세 개(스냅샷·수정 종가 1년치 이력·실행 기록), 다른 기능이 읽는 주가 창구. 웹 주소 없음 | `core`, `domain` |
 | `features/peers` | 연 1회 유사도 계산 명령(`peers build`·`peers inspect`), 유사 기업·테마 검색 주소, 유사 기업 표 다섯 개와 DB 함수 두 개 | `core`, `domain`, 기능 `coverage`·`prices`·`reports`(`reports`는 명령 함수 안에서만) |
-| `features/freshness` | 모든 화면 맨 위 상태 줄의 주소(`/api/freshness`). 자기 표·설정 없음 | `core`, `domain`, 기능 `prices`·`reports` |
+| `features/flows` | 매일 수급 갱신 명령(`flows update`), 수급 랭킹·기업 수급 주소, 수급 표 네 개와 DB 함수 두 개 | `core`, `domain`, 기능 `prices`·`coverage`(둘 다 함수 안에서만) |
+| `features/freshness` | 모든 화면 맨 위 상태 줄의 주소(`/api/freshness`). 자기 표·설정 없음 | `core`, `domain`, 기능 `prices`·`flows`·`reports` |
 | `web` | 웹 서버 조립: 공통 보안 장치, 오류 응답, 화면 파일, 기능 등록 목록. 업무 처리를 하지 않는다 | `core`, `domain`, 기능의 공개 창구 |
 
-- 기능끼리는 상대 기능의 `__init__.py`가 내보낸 이름으로만 주고받는다. 기능 사이 의존은 위 표에 적힌 방향(`reports → analysis`, `compare → reports·analysis`, `coverage → reports`, `review → coverage`, `peers → coverage·prices·reports`, `freshness → prices·reports`)뿐이고, 거꾸로나 순환은 없다. `prices`는 다른 기능을 쓰지 않는다.
+- 기능끼리는 상대 기능의 `__init__.py`가 내보낸 이름으로만 주고받는다. 기능 사이 의존은 위 표에 적힌 방향(`reports → analysis`, `compare → reports·analysis`, `coverage → reports`, `review → coverage`, `peers → coverage·prices·reports`, `flows → prices·coverage`, `freshness → prices·flows·reports`)뿐이고, 거꾸로나 순환은 없다. `prices`는 다른 기능을 쓰지 않는다.
 - `analysis`에 웹 주소가 없는 이유: 리포트 목록이 분석 결과를 붙이려면 `reports`가 `analysis`를 써야 한다. `analysis`가 리포트 행을 직접 읽으면 서로 물고 물린다. 그래서 `analysis`는 받은 행을 분석만 하고, 분석 주소는 `reports`가 맡는다.
 - `review`가 `coverage`를 쓰는 이유: 검토 직후 커버리지 숫자가 바로 바뀌어야 한다. 웹 조립부는 등록만 하므로 이 연결을 거기에 두지 않는다.
 - `peers`가 `reports`를 명령 함수 안에서만 쓰는 이유: 명령 입구는 모든 명령에서 `peers` 창구를 import하는데, 리포트 창구는 FastAPI를 불러온다. 분류 진행 확인은 `peers build`가 실행될 때만 필요하다. 그래서 `peers build`는 실행될 때 웹 패키지가 있어야 한다.
-- 명령이 있는 기능(`prices`, `peers`)의 창구는 FastAPI를 부르지 않는 이름만 묶는다. 웹 주소가 있으면(`peers`) 웹 조립부가 창구의 `web_router()`를 불러 라우터를 받는다. 명령 없이 `python -m research_desk`를 실행하면 FastAPI·uvicorn·웹 앱·LangGraph·pymongo·유사 기업 웹 쪽이 올라오지 않는다.
+- 명령이 있는 기능(`prices`, `peers`, `flows`)의 창구는 FastAPI를 부르지 않는 이름만 묶는다. 웹 주소가 있으면(`peers`, `flows`) 웹 조립부가 창구의 `web_router()`를 불러 라우터를 받는다. 명령 없이 `python -m research_desk`를 실행하면 FastAPI·uvicorn·웹 앱·LangGraph·pymongo·유사 기업 웹 쪽·수급 웹 쪽이 올라오지 않는다.
+- `flows`가 `prices`·`coverage`를 함수 안에서만 쓰는 이유: 명령 입구는 모든 명령에서 `flows` 창구를 import하는데, 커버리지 창구는 라우터를 묶고 있어 FastAPI를 불러온다. 주가 창구도 수급 갱신의 거절 확인·시총 읽기와 수급 탭의 종가 읽기 때만 필요하다.
 - 이 칸 경계와 아래 표 주인은 `research_desk/tests/test_architecture.py`가 모든 테스트 실행(그리고 모든 커밋)에서 검사한다.
 
 ## DB 표와 주인
@@ -100,11 +116,13 @@ reports (auto / review_needed) ──(같은 직접 연결)──▶ tag requeue
 | `reports` | `features/reports` | 분류가 끝난 리포트 조회(목록·상세·PDF·집계 재료·여러 종목 리포트·가장 최근 리포트), 분류 진행 중인 행 개수 |
 | `failed_attempts` | `collector` | 실패 기록·재시도·정리 |
 | `report_summaries` | `features/analysis` | 분석 결과 저장·조회, 비교 결과 저장 |
-| `stock_price_snapshot`, `price_update_runs` | `features/prices` | 종목당 최신 주가 스냅샷 쓰기·읽기, 주가 갱신 실행 기록 |
+| `stock_price_snapshot`, `stock_price_daily`, `price_update_runs` | `features/prices` | 종목당 최신 주가 스냅샷 쓰기·읽기, 수정 종가 일별 이력(380일), 주가 갱신 실행 기록 |
 | `company_profiles`, `company_segments`, `company_embeddings`, `segment_embeddings`, `peer_builds` | `features/peers` | 회사별 사업 요약 카드와 사업부문, 임베딩 모델별 임베딩, 빌드 기록(백분위표·용어표) |
 | DB 함수 `match_company_profiles`, `match_company_segments` | `features/peers` | 질의 벡터와 가까운 회사 / 회사마다 가장 가까운 사업부문(정확 탐색, 최대 200행) |
+| `investor_flow_daily`, `investor_flow_runs`, `investor_flow_days`, `investor_flow_stocks` | `features/flows` | 종목·거래일별 11개 주체 순매수(백만 원)와 그날 고정된 250일 순위·시총, 수급 갱신 실행 기록, 순위 매긴 날 목록(최근 60개), 종목별 자료 시작일 |
+| DB 함수 `rank_investor_flows`, `investor_flow_coverage` | `features/flows` | 날 하나의 250일 순위와 그날 시총 쓰기(한 번 매기면 고정) / 종목별 보관 범위 안의 행 수·첫날·마지막 날 |
 
-`compare`·`coverage`는 표에 직접 닿지 않고 `reports`의 공개 창구로 읽는다. 비교 결과 저장도 `analysis`의 공개 창구를 거친다. `peers`는 리포트 수를 `coverage`, 주가를 `prices`, 분류 진행 여부를 `reports` 창구로 받고, `freshness`는 `prices`·`reports` 창구만 읽는다.
+`compare`·`coverage`는 표에 직접 닿지 않고 `reports`의 공개 창구로 읽는다. 비교 결과 저장도 `analysis`의 공개 창구를 거친다. `peers`는 리포트 수를 `coverage`, 주가를 `prices`, 분류 진행 여부를 `reports` 창구로 받는다. `flows`는 그날 시총·수정 종가·주가 갱신 진행 여부를 `prices`, 리포트 수를 `coverage` 창구로 받고, `freshness`는 `prices`·`flows`·`reports` 창구만 읽는다.
 
 ## 외부 의존
 
@@ -117,8 +135,8 @@ reports (auto / review_needed) ──(같은 직접 연결)──▶ tag requeue
 | Anthropic API | 모델 이름이 `claude-*` | `ANTHROPIC_API_KEY` |
 | OpenAI API | 그 밖의 모델 이름, 그리고 모든 임베딩(`peers build`, 웹 테마 검색) | `OPENAI_API_KEY`. 유사 기업 기능은 프로필 모델이 Claude여도 임베딩 때문에 이 키가 필요하다 |
 | Codex CLI | 모델 이름이 `codex:<모델>` | 로컬 `codex exec` (ChatGPT 로그인 한도, API 키 없음) |
-| 한국투자증권 KIS Open API | `core.kis` ← `prices update` | httpx(HTTPS), 실전 서버 `KIS_BASE_URL`. `KIS_APP_KEY`·`KIS_APP_SECRET` → 실행마다 접근 토큰 한 번. 수정주가 일봉(한 번에 100행)과 현재가. 초당 호출 수는 `PRICES_MAX_CALLS_PER_SEC` 이하 |
+| 한국투자증권 KIS Open API | `core.kis` ← `prices update`, `flows update` | httpx(HTTPS), 실전 서버 `KIS_BASE_URL`. `KIS_APP_KEY`·`KIS_APP_SECRET`(두 명령이 같은 값). 접근 토큰은 `KIS_TOKEN_CACHE`가 가리키는 masterdb의 토큰 파일에서 먼저 읽고(유효하면 KIS에 묻지 않는다), 없을 때만 실행마다 한 번 받아 그 파일에 쓴다. 주가: 수정주가 일봉(한 번에 100행)과 현재가. 수급: 투자자별 일별 매매(`FHPTJ04160001`, KRX만, 한 번에 30거래일, 백만 원). 초당 호출 수는 각각 `PRICES_MAX_CALLS_PER_SEC`·`FLOWS_MAX_CALLS_PER_SEC` 이하 |
 | 로컬 MongoDB `FS.A001_v2` | `core.mongo` ← `peers build` | pymongo, 읽기만. 사업보고서 섹션 하나 = 문서 하나이고 `parser_version` 0.2.0 이상인 문서만 읽는다. `DART_MONGO_URL`·`DART_MONGO_DB`·`DART_MONGO_COLLECTION` |
 | LangSmith | 선택 | `LANGSMITH_TRACING=true`면 LangGraph 실행과 LLM 호출 기록을 보냄(분류의 1쪽 그림 포함) |
 | Windows PowerShell 5.1 | `tag requeue --apply` | `Get-CimInstance Win32_Process`로 이 PC에서 백필·재처리·수집·웹앱이 도는지 확인(새 패키지 없음) |
-| 윈도우 작업 스케줄러 | 매일 주가 갱신 | 평일 장 마감 뒤(기본 18:30) `scripts/run-prices.ps1` → `python -m research_desk prices update`. 저장소 폴더를 현재 폴더로 맞추는 `.ps1`을 거쳐 `python -m research_desk <명령>`을 부르는 방식 |
+| 윈도우 작업 스케줄러 | 매일 주가·수급 갱신 | 평일 장 마감 뒤(기본 18:30) `scripts/run-prices.ps1` → `python -m research_desk prices update` → 종료 코드가 0이면 이어서 `python -m research_desk flows update`. 저장소 폴더를 현재 폴더로 맞추는 `.ps1`을 거쳐 `python -m research_desk <명령>`을 부르는 방식 |

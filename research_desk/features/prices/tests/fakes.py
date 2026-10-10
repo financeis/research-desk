@@ -1,27 +1,32 @@
-"""In-memory stand-ins for the prices tests: the supabase-py builder over the two price tables,
+"""In-memory stand-ins for the prices tests: the supabase-py builder over the three price tables,
 and the KIS client.
 
 ``FakeSupabase`` serves the calls features.prices makes: select (columns as one comma-separated
-string, or '*'), eq, in_, order, limit, range, insert, upsert (on_conflict='stock_code'),
-update, execute. It behaves like Supabase / PostgREST where the feature depends on it:
+string, or '*'), eq, in_, gte, lt, order, limit, range, insert, upsert (on_conflict='stock_code'
+for snapshots, 'stock_code,trade_date' for the history), update, delete, execute. It behaves like
+Supabase / PostgREST where the feature depends on it:
 
 - one response holds at most ``MAX_ROWS`` (1000) rows;
-- a NULL value never passes eq / in_; ``order`` puts NULLs last ascending and first descending;
+- a NULL value never passes eq / in_ / gte / lt; ``order`` puts NULLs last ascending and first
+  descending;
 - a bulk upsert writes the union of its rows' keys (a key missing from one row is NULL there,
   supabase-py's ``default_to_null``); an existing row changes only in those columns; a new row
-  gets the table defaults for the columns not written (flags '{}', source 'KIS', updated_at now);
-  one statement may not touch the same stock twice;
+  gets the table defaults for the columns not written (snapshots: flags '{}', source 'KIS',
+  updated_at now); one statement may not touch the same row (the same conflict key) twice;
 - inserting a run gives it the next ``run_id`` and the defaults (started_at now, status
   'running');
-- the NOT NULL and CHECK constraints of migration 008 hold and unknown columns are refused; a
-  violation raises ``FakeDBError`` and the statement writes nothing (like the API error of a real
-  request). Payloads must be JSON (a ``date`` object or NaN fails, like supabase-py's request);
+- the NOT NULL and CHECK constraints of migrations 008 / 009 hold and unknown columns are refused;
+  a history close must be a whole number (bigint) and its trade_date a day; a violation raises
+  ``FakeDBError`` and the statement writes nothing (like the API error of a real request).
+  Payloads must be JSON (a ``date`` object or NaN fails, like supabase-py's request);
+- a delete needs a filter (only the history is deleted from);
+- ``returning='minimal'`` sends nothing back (``data`` is ``[]``), as ``Prefer: return=minimal``;
 - ``range()`` may be called once per query: postgrest-py 2.29 appends offset/limit instead of
   replacing them, so a paged read must build a new query for each page.
 
-Each execution is kept in ``executed``; ``writes()`` lists the inserts, upserts and updates.
-``fail_next(kind)`` makes the next query of that kind ('select', 'insert', 'upsert', 'update')
-raise FakeDBError (a DB outage).
+Each execution is kept in ``executed``; ``writes()`` lists the inserts, upserts, updates and
+deletes. ``fail_next(kind, table=None)`` makes the next query of that kind ('select', 'insert',
+'upsert', 'update', 'delete'), on that table when one is named, raise FakeDBError (a DB outage).
 
 ``FakeKis`` is the KIS client of one run (``KisClient.ensure_token`` / ``daily_prices`` / ``quote``).
 """
@@ -36,6 +41,7 @@ from typing import Any, Callable, Optional
 
 SNAPSHOT = "stock_price_snapshot"
 RUNS = "price_update_runs"
+DAILY = "stock_price_daily"
 MAX_ROWS = 1000
 
 # migration 008
@@ -44,9 +50,14 @@ SNAPSHOT_COLUMNS = ("stock_code", "market", "as_of", "close", "market_cap", "avg
                     "flags", "source", "updated_at")
 RUN_COLUMNS = ("run_id", "started_at", "finished_at", "status", "as_of", "stocks_total", "stocks_ok",
                "stocks_failed", "message")
-COLUMNS = {SNAPSHOT: SNAPSHOT_COLUMNS, RUNS: RUN_COLUMNS}
+# migration 009: the adjusted close (수정 종가, won) of a stock on a day, primary key (stock_code, trade_date)
+DAILY_COLUMNS = ("stock_code", "trade_date", "close")
+COLUMNS = {SNAPSHOT: SNAPSHOT_COLUMNS, RUNS: RUN_COLUMNS, DAILY: DAILY_COLUMNS}
+# The conflict key of each table prices upserts into (its primary key).
+UPSERT_KEYS = {SNAPSHOT: ("stock_code",), DAILY: ("stock_code", "trade_date")}
 MARKETS = (None, "KOSPI", "KOSDAQ")
 STATUSES = ("running", "ok", "partial", "failed")
+BIGINT = (-2**63, 2**63 - 1)
 
 # The DB settings the tests give (never a real project).
 URL, KEY = "https://example.supabase.test", "service-key"
@@ -57,16 +68,17 @@ class FakeDBError(Exception):
 
 
 class FakeQuery:
-    """One chained query on one of the two tables."""
+    """One chained query on one of the three tables."""
 
     def __init__(self, db: "FakeSupabase", table: str) -> None:
-        assert table in COLUMNS, f"prices reads and writes only its two tables, got {table!r}"
+        assert table in COLUMNS, f"prices reads and writes only its three tables, got {table!r}"
         self.db = db
         self.table = table
         self.kind: Optional[str] = None
         self.columns: Optional[list[str]] = None       # None: every column
         self.payload: Any = None
         self.on_conflict: Optional[str] = None
+        self.returning = "representation"              # 'minimal': nothing sent back
         self.filters: list[tuple[str, str, Any]] = []  # (operator, column, value)
         self.orders: list[tuple[str, bool]] = []       # (column, desc)
         self.offset: Optional[int] = None
@@ -74,9 +86,12 @@ class FakeQuery:
 
     # ── building ─────────────────────────────────────────────────────────────
 
-    def _begin(self, kind: str) -> None:
+    def _begin(self, kind: str, options: Optional[dict] = None) -> None:
         assert self.kind is None, f"one query is one statement: {self.kind} then {kind}"
         self.kind = kind
+        returning = str((options or {}).get("returning", "representation"))
+        assert returning in ("representation", "minimal"), f"unknown returning {returning!r}"
+        self.returning = returning
 
     def select(self, columns: str = "*", count: Optional[str] = None) -> "FakeQuery":
         self._begin("select")
@@ -87,18 +102,22 @@ class FakeQuery:
         return self
 
     def insert(self, payload: Any, **options: Any) -> "FakeQuery":
-        self._begin("insert")
+        self._begin("insert", options)
         self.payload = self.db.as_json(payload)
         return self
 
     def upsert(self, payload: Any, *, on_conflict: str = "", **options: Any) -> "FakeQuery":
-        self._begin("upsert")
+        self._begin("upsert", options)
         self.payload, self.on_conflict = self.db.as_json(payload), on_conflict
         return self
 
     def update(self, values: dict, **options: Any) -> "FakeQuery":
-        self._begin("update")
+        self._begin("update", options)
         self.payload = self.db.as_json(values)
+        return self
+
+    def delete(self, **options: Any) -> "FakeQuery":
+        self._begin("delete", options)
         return self
 
     def eq(self, column: str, value: Any) -> "FakeQuery":
@@ -109,6 +128,16 @@ class FakeQuery:
     def in_(self, column: str, values) -> "FakeQuery":
         self.db.check_column(self.table, column)
         self.filters.append(("in", column, list(values)))
+        return self
+
+    def gte(self, column: str, value: Any) -> "FakeQuery":
+        self.db.check_column(self.table, column)
+        self.filters.append(("gte", column, value))
+        return self
+
+    def lt(self, column: str, value: Any) -> "FakeQuery":
+        self.db.check_column(self.table, column)
+        self.filters.append(("lt", column, value))
         return self
 
     def order(self, column: str, *, desc: bool = False, nullsfirst: Optional[bool] = None) -> "FakeQuery":
@@ -140,12 +169,14 @@ class FakeQuery:
     # ── running it ───────────────────────────────────────────────────────────
 
     def execute(self) -> SimpleNamespace:
-        assert self.kind is not None, "a query must call select / insert / upsert / update first"
+        assert self.kind is not None, "a query must call select / insert / upsert / update / delete first"
         self.db.executed.append(self)
-        if self.db.failing.get(self.kind):
-            self.db.failing[self.kind] -= 1
-            raise FakeDBError(f"fake DB outage on {self.kind} {self.table}")
-        return SimpleNamespace(data=getattr(self, f"_{self.kind}")(), count=None)
+        for target in ((self.kind, self.table), (self.kind, None)):
+            if self.db.failing.get(target):
+                self.db.failing[target] -= 1
+                raise FakeDBError(f"fake DB outage on {self.kind} {self.table}")
+        data = getattr(self, f"_{self.kind}")()
+        return SimpleNamespace(data=[] if self.returning == "minimal" else data, count=None)
 
     def _passes(self, row: dict) -> bool:
         for operator, column, value in self.filters:
@@ -155,6 +186,10 @@ class FakeQuery:
             if operator == "eq" and cell != value:
                 return False
             if operator == "in" and cell not in value:
+                return False
+            if operator == "gte" and not cell >= value:
+                return False
+            if operator == "lt" and not cell < value:
                 return False
         return True
 
@@ -198,60 +233,72 @@ class FakeQuery:
         return deepcopy(made)
 
     def _upsert(self) -> list[dict]:
-        assert self.table == SNAPSHOT and self.on_conflict == "stock_code", (
-            "prices upserts only snapshot rows, on stock_code")
+        key = UPSERT_KEYS.get(self.table)
+        assert key is not None and self.on_conflict == ",".join(key), (
+            "prices upserts snapshot rows on stock_code and history rows on stock_code,trade_date, "
+            f"got {self.table} on {self.on_conflict!r}")
         sent = self.rows_sent
         columns = list(dict.fromkeys(name for row in sent for name in row))   # PostgREST `columns`
         for name in columns:
-            self.db.check_column(SNAPSHOT, name)
-        codes = [row.get("stock_code") for row in sent]
-        if len(set(codes)) != len(codes):
+            self.db.check_column(self.table, name)
+        keys = [tuple(row.get(name) for name in key) for row in sent]
+        if len(set(keys)) != len(keys):
             raise FakeDBError("ON CONFLICT DO UPDATE command cannot affect row a second time")
-        table = {row["stock_code"]: deepcopy(row) for row in self.db.tables[SNAPSHOT]}
+        table = {tuple(row[name] for name in key): deepcopy(row) for row in self.db.tables[self.table]}
         order = list(table)
         written = []
-        for row in sent:
+        for row, row_key in zip(sent, keys):
             values = {name: deepcopy(row.get(name)) for name in columns}
-            code = values.get("stock_code")
-            if code in table:
-                table[code].update(values)
+            if row_key in table:
+                table[row_key].update(values)
             else:
-                table[code] = ({name: None for name in SNAPSHOT_COLUMNS}
-                               | {"flags": [], "source": "KIS", "updated_at": self.db.now} | values)
-                order.append(code)
-            written.append(table[code])
+                table[row_key] = self.db.new_row(self.table) | values
+                order.append(row_key)
+            written.append(table[row_key])
+        check = self.db.checker(self.table)
         for row in written:
-            self.db.check_snapshot(row)
-        self.db.tables[SNAPSHOT] = [table[code] for code in order]
+            check(row)
+        self.db.tables[self.table] = [table[row_key] for row_key in order]
         return deepcopy(written)
 
     def _update(self) -> list[dict]:
         for name in self.payload:
             self.db.check_column(self.table, name)
         matched = [row for row in self.db.tables[self.table] if self._passes(row)]
-        check = self.db.check_run if self.table == RUNS else self.db.check_snapshot
+        check = self.db.checker(self.table)
         for row in matched:
             check(row | self.payload)
         for row in matched:
             row.update(deepcopy(self.payload))
         return deepcopy(matched)
 
+    def _delete(self) -> list[dict]:
+        assert self.table == DAILY, "prices deletes only history rows"
+        assert self.filters, "a delete without a filter would empty the table"
+        kept, deleted = [], []
+        for row in self.db.tables[self.table]:
+            (deleted if self._passes(row) else kept).append(row)
+        self.db.tables[self.table] = kept
+        return deepcopy(deleted)
+
 
 class FakeSupabase:
     """``table(name)`` starts a FakeQuery over ``tables[name]`` (a list of row dicts)."""
 
     def __init__(self, snapshots: Optional[list[dict]] = None, runs: Optional[list[dict]] = None,
-                 now: str = "2026-10-01T00:00:00+00:00") -> None:
-        self.tables: dict[str, list[dict]] = {SNAPSHOT: [], RUNS: []}
+                 now: str = "2026-10-01T00:00:00+00:00", daily: Optional[list[dict]] = None) -> None:
+        self.tables: dict[str, list[dict]] = {SNAPSHOT: [], RUNS: [], DAILY: []}
         self.now = now   # the DB's now() for column defaults
         self.next_run_id = 1
         self.executed: list[FakeQuery] = []
-        self.failing: dict[str, int] = {}
+        self.failing: dict[tuple[str, Optional[str]], int] = {}
         self.made: list[tuple[str, str]] = []   # (url, key) of each client handed out
         for row in snapshots or []:
             self.add_snapshot(row)
         for row in runs or []:
             self.add_run(row)
+        for row in daily or []:
+            self.add_daily(row)
 
     def table(self, name: str) -> FakeQuery:
         return FakeQuery(self, name)
@@ -259,8 +306,7 @@ class FakeSupabase:
     # ── setting up ───────────────────────────────────────────────────────────
 
     def add_snapshot(self, row: dict) -> dict:
-        full = ({name: None for name in SNAPSHOT_COLUMNS}
-                | {"flags": [], "source": "KIS", "updated_at": self.now} | deepcopy(row))
+        full = self.new_row(SNAPSHOT) | deepcopy(row)
         self.check_snapshot(full)
         self.tables[SNAPSHOT].append(full)
         return full
@@ -274,8 +320,17 @@ class FakeSupabase:
         self.tables[RUNS].append(full)
         return full
 
-    def fail_next(self, kind: str, times: int = 1) -> None:
-        self.failing[kind] = self.failing.get(kind, 0) + times
+    def add_daily(self, row: dict) -> dict:
+        """Store one history row ``{stock_code, trade_date: 'YYYY-MM-DD', close}``."""
+        full = self.new_row(DAILY) | deepcopy(row)
+        self.check_daily(full)
+        assert all((other["stock_code"], other["trade_date"]) != (full["stock_code"], full["trade_date"])
+                   for other in self.tables[DAILY]), "one history row per stock and day"
+        self.tables[DAILY].append(full)
+        return full
+
+    def fail_next(self, kind: str, times: int = 1, table: Optional[str] = None) -> None:
+        self.failing[(kind, table)] = self.failing.get((kind, table), 0) + times
 
     # ── looking at it ────────────────────────────────────────────────────────
 
@@ -286,6 +341,13 @@ class FakeSupabase:
     def runs(self) -> list[dict]:
         return deepcopy(self.tables[RUNS])
 
+    def history(self) -> dict[str, dict[str, int]]:
+        """The stored history as ``{stock_code: {trade_date: close}}``, codes and days in order."""
+        found: dict[str, dict[str, int]] = {}
+        for row in sorted(self.tables[DAILY], key=lambda row: (row["stock_code"], row["trade_date"])):
+            found.setdefault(row["stock_code"], {})[row["trade_date"]] = row["close"]
+        return found
+
     def queries(self, table: str, kind: Optional[str] = None) -> list[FakeQuery]:
         return [q for q in self.executed if q.table == table and kind in (None, q.kind)]
 
@@ -293,6 +355,16 @@ class FakeSupabase:
         return [q for q in self.executed if q.kind != "select"]
 
     # ── the DB's rules ───────────────────────────────────────────────────────
+
+    def new_row(self, table: str) -> dict:
+        """A new row before its written columns: NULLs and the table defaults."""
+        row = {name: None for name in COLUMNS[table]}
+        if table == SNAPSHOT:
+            row |= {"flags": [], "source": "KIS", "updated_at": self.now}
+        return row
+
+    def checker(self, table: str) -> Callable[[dict], None]:
+        return {SNAPSHOT: self.check_snapshot, RUNS: self.check_run, DAILY: self.check_daily}[table]
 
     @staticmethod
     def as_json(payload: Any) -> Any:
@@ -306,6 +378,19 @@ class FakeSupabase:
     def check_column(table: str, name: str) -> None:
         if name not in COLUMNS[table]:
             raise FakeDBError(f'column "{name}" of relation "{table}" does not exist')
+
+    @staticmethod
+    def check_daily(row: dict) -> None:
+        for name in DAILY_COLUMNS:
+            if row.get(name) is None:
+                raise FakeDBError(f'null value in column "{name}" violates not-null constraint')
+        try:
+            date.fromisoformat(row["trade_date"])
+        except (TypeError, ValueError):
+            raise FakeDBError(f'invalid input syntax for type date: "{row["trade_date"]}"') from None
+        close = row["close"]
+        if isinstance(close, bool) or not isinstance(close, int) or not BIGINT[0] <= close <= BIGINT[1]:
+            raise FakeDBError(f'invalid input syntax for type bigint: "{close}"')
 
     @staticmethod
     def check_snapshot(row: dict) -> None:

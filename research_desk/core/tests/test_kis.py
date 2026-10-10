@@ -28,6 +28,8 @@ APP_KEY = "PSfakeAppKey0123456789abcdefghijklm"
 APP_SECRET = "fakeAppSecret/0123456789+abcdefghijklmnopqrstuvwxyz=="
 TOKEN = "eyJfake.access-token.0123456789"
 OK = {"rt_cd": "0", "msg_cd": "MCA00000", "msg1": "정상처리 되었습니다."}
+# 종목별 투자자매매동향(일별), as KIS documents it (the fake serves it; a test checks the client asks it).
+INVESTOR_PATH = "/uapi/domestic-stock/v1/quotations/investor-trade-by-stock-daily"
 
 
 class FakeClock:
@@ -46,7 +48,8 @@ class FakeClock:
 
 
 class FakeKis:
-    """The KIS server: issues TOKEN, serves ``daily`` rows and ``quote``, records every request.
+    """The KIS server: issues TOKEN, serves ``daily`` rows, ``quote`` and ``investor`` rows,
+    records every request.
 
     ``answers`` (data calls) and ``token_answers`` are played first, one per request:
     an httpx.Response to return or an exception to raise.
@@ -60,6 +63,7 @@ class FakeKis:
         self.token_answers: list = []
         self.daily: list[dict] = []
         self.quote: dict = {}
+        self.investor: list[dict] = []
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -78,6 +82,11 @@ class FakeKis:
             return httpx.Response(200, json={**OK, "output1": {}, "output2": rows[:100]})
         if request.url.path == kis.QUOTE_PATH:
             return httpx.Response(200, json={**OK, "output": self.quote})
+        if request.url.path == INVESTOR_PATH:
+            anchor = request.url.params["FID_INPUT_DATE_1"]
+            rows = sorted((row for row in self.investor if row["stck_bsop_date"] <= anchor),
+                          key=lambda row: row["stck_bsop_date"], reverse=True)  # newest first, like KIS
+            return httpx.Response(200, json={**OK, "output1": {}, "output2": rows[:30]})
         return httpx.Response(404, text="Not Found")
 
     @staticmethod
@@ -471,6 +480,157 @@ def test_quote_without_figures_gives_none(server, clock):
     server.quote = {"hts_avls": "", "lstn_stcn": ""}
     assert make_client(server, clock).quote("123450") == {
         "market_cap": None, "listed_shares": None, "halted": False, "admin_issue": False}
+
+
+# ── investor trading by day ──────────────────────────────────────────────────
+
+# The amount fields (names ending in pbmn, 백만 원) the investor-flow feature maps to investors.
+FLOW_FIELDS = ("pe_fund_ntby_tr_pbmn", "frgn_reg_ntby_pbmn", "orgn_ntby_tr_pbmn", "etc_orgt_ntby_tr_pbmn",
+               "fund_ntby_tr_pbmn", "ivtr_ntby_tr_pbmn", "scrt_ntby_tr_pbmn", "insu_ntby_tr_pbmn",
+               "bank_ntby_tr_pbmn", "mrbn_ntby_tr_pbmn", "etc_corp_ntby_tr_pbmn", "prsn_ntby_tr_pbmn")
+# More amount fields KIS sends in the same row: core passes every one through, unmapped.
+OTHER_AMOUNTS = ("acml_tr_pbmn", "frgn_ntby_tr_pbmn", "frgn_nreg_ntby_pbmn", "etc_ntby_tr_pbmn",
+                 "frgn_seln_tr_pbmn", "frgn_shnu_tr_pbmn", "frgn_reg_askp_pbmn")
+# Fields of the row that are not amounts (quantities, volumes, prices, signs): left out.
+NOT_AMOUNTS = {"stck_oprc": "70100", "stck_hgpr": "70500", "stck_lwpr": "69800", "prdy_vrss": "-150",
+               "prdy_vrss_sign": "5", "prdy_ctrt": "-0.21", "acml_vol": "1234567", "frgn_ntby_qty": "-3500",
+               "orgn_ntby_qty": "1200", "prsn_ntby_qty": "2300", "pe_fund_ntby_vol": "10",
+               "etc_corp_ntby_vol": "-20", "frgn_seln_vol": "40000", "bold_yn": "N"}
+
+
+def amounts(base: int) -> dict[str, int]:
+    """Every amount of one row by field name; net buying is negative on every other field."""
+    names = FLOW_FIELDS + OTHER_AMOUNTS
+    return {name: (base + i) * (-1 if i % 2 else 1) for i, name in enumerate(names)}
+
+
+def investor_row(day: date, close: int, figures: dict[str, int]) -> dict:
+    """One output2 row of 종목별 투자자매매동향(일별) as KIS sends it: every value a string."""
+    return {"stck_bsop_date": ymd(day), "stck_clpr": str(close), **NOT_AMOUNTS,
+            **{name: str(value) for name, value in figures.items()}}
+
+
+def investor_answer(*rows: dict) -> httpx.Response:
+    return httpx.Response(200, json={**OK, "output1": {}, "output2": list(rows)})
+
+
+def test_investor_daily_is_one_call_with_its_tr_id_and_five_params(server, clock):
+    with make_client(server, clock) as client:
+        client.investor_daily("005930", date(2026, 10, 8))
+
+    (request,) = server.data_requests()
+    assert (request.method, request.url.path) == ("GET", INVESTOR_PATH)
+    assert request.headers["tr_id"] == "FHPTJ04160001"
+    assert dict(request.url.params) == {
+        "FID_COND_MRKT_DIV_CODE": "J",    # KRX
+        "FID_INPUT_ISCD": "005930",
+        "FID_INPUT_DATE_1": "20261008",   # the anchor: the 30 trading days ending on it come back
+        "FID_ORG_ADJ_PRC": "",            # blank, as KIS asks
+        "FID_ETC_CLS_CODE": "",           # blank, as KIS asks
+    }
+    assert request.headers["authorization"] == f"Bearer {TOKEN}"
+    assert (request.headers["appkey"], request.headers["appsecret"]) == (APP_KEY, APP_SECRET)
+
+
+def test_investor_daily_gives_the_days_up_to_the_anchor_oldest_first_with_every_amount(server, clock):
+    days = trading_days(date(2026, 8, 3), 50)
+    server.investor = [investor_row(day, 70000 + i, amounts(i)) for i, day in enumerate(days)]
+
+    rows = make_client(server, clock).investor_daily("005930", days[39])
+
+    # KIS answers the 30 trading days ending on the anchor, newest first: they come back oldest
+    # first as {date, close, every amount field under its KIS name}, nothing else of the row.
+    assert rows == [{"date": day, "close": 70000 + i, **amounts(i)} for i, day in enumerate(days)
+                    if 10 <= i <= 39]
+    assert set(FLOW_FIELDS) <= set(rows[0])
+    assert len(server.data_requests()) == 1
+
+
+def test_investor_daily_blank_figures_are_none(server, clock):
+    day = date(2026, 10, 8)
+    raw = investor_row(day, 70000, amounts(5))
+    raw.update({"stck_clpr": "", "frgn_reg_ntby_pbmn": "", "orgn_ntby_tr_pbmn": "  ", "prsn_ntby_tr_pbmn": None})
+    server.answers = [investor_answer(raw)]
+
+    (row,) = make_client(server, clock).investor_daily("005930", day)
+
+    assert row == {"date": day, "close": None, **amounts(5),
+                   "frgn_reg_ntby_pbmn": None, "orgn_ntby_tr_pbmn": None, "prsn_ntby_tr_pbmn": None}
+
+
+def test_investor_daily_leaves_out_rows_without_a_date(server, clock):
+    day = date(2026, 10, 8)
+    blank = {**investor_row(day, 1, amounts(0)), "stck_bsop_date": ""}
+    spaces = {**investor_row(day, 2, amounts(0)), "stck_bsop_date": "   "}
+    missing = {name: value for name, value in investor_row(day, 3, amounts(0)).items()
+               if name != "stck_bsop_date"}
+    server.answers = [investor_answer(blank, investor_row(day, 70000, amounts(1)), spaces, missing)]
+
+    assert make_client(server, clock).investor_daily("005930", day) == [
+        {"date": day, "close": 70000, **amounts(1)}]
+
+
+@pytest.mark.parametrize("body", [{**OK, "output1": {}, "output2": []}, {**OK, "output1": {}}],
+                         ids=["no rows", "no output2"])
+def test_investor_daily_without_rows_is_empty(server, clock, body):
+    server.answers = [httpx.Response(200, json=body)]
+    assert make_client(server, clock).investor_daily("005930", date(2026, 10, 8)) == []
+
+
+def test_investor_daily_keeps_one_row_a_day(server, clock):
+    day, before = date(2026, 10, 8), date(2026, 10, 7)
+    server.answers = [investor_answer(investor_row(day, 70100, amounts(1)), investor_row(before, 69000, amounts(2)),
+                                      investor_row(day, 70000, amounts(3)))]
+
+    rows = make_client(server, clock).investor_daily("005930", day)
+
+    assert [(row["date"], row["close"]) for row in rows] == [(before, 69000), (day, 70000)]  # the last wins
+
+
+def test_investor_daily_refused_by_kis_raises_at_once(server, clock):
+    server.answers = [httpx.Response(200, json={"rt_cd": "1", "msg_cd": "KIER2620",
+                                                "msg1": "조회할 자료가 없습니다"})]
+
+    with pytest.raises(KisError) as exc:
+        make_client(server, clock).investor_daily("005930", date(2026, 10, 8))
+
+    assert (exc.value.code, exc.value.status) == ("KIER2620", 200)
+    assert "005930" in str(exc.value) and "KIER2620" in str(exc.value)
+    assert len(server.data_requests()) == 1
+    assert clock.sleeps == pytest.approx([0.1])  # the pace only: no retry wait
+
+
+def test_investor_daily_shares_the_clients_token_pace_and_retries(server, clock):
+    day = date(2026, 10, 8)
+    server.quote = {"hts_avls": "1", "lstn_stcn": "1"}
+    server.investor = [investor_row(day, 70000, amounts(0))]
+    server.answers = [httpx.Response(200, json=BUSY)]   # 초당 거래건수 초과: asked again after 1 s
+
+    with make_client(server, clock) as client:
+        rows = client.investor_daily("005930", day)
+        client.quote("005930")
+
+    assert [row["date"] for row in rows] == [day]
+    assert len(token_requests(server)) == 1
+    assert [request.url.path for request in server.data_requests()] == [INVESTOR_PATH, INVESTOR_PATH,
+                                                                        kis.QUOTE_PATH]
+    assert clock.sleeps == pytest.approx([0.1, 1.0, 0.1])   # pace, the retry's wait, pace
+
+
+def test_investor_daily_errors_never_hold_the_key_secret_or_token(server, clock, caplog):
+    echo = f"appkey={APP_KEY} appsecret={APP_SECRET} token={TOKEN}"   # a server that repeats them
+    server.answers = [httpx.Response(200, json={**BUSY, "msg1": echo}),
+                      httpx.Response(200, json={"rt_cd": "1", "msg_cd": "EGW00999", "msg1": echo})]
+
+    with caplog.at_level(logging.DEBUG, logger=kis.__name__):
+        with pytest.raises(KisError) as exc:
+            make_client(server, clock).investor_daily("005930", date(2026, 10, 8))
+
+    shown = "".join(traceback.format_exception(exc.value)) + caplog.text
+    assert caplog.text.count("retry") == 1
+    for secret in (APP_KEY, APP_SECRET, TOKEN):
+        assert secret not in shown
+    assert "EGW00999" in str(exc.value) and "***" in str(exc.value)
 
 
 # ── pace ─────────────────────────────────────────────────────────────────────
