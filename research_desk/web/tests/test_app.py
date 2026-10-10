@@ -11,13 +11,14 @@ Ported from langgraph_tagger/workspace/tests/test_migration.py:
   days are 422, the review action without a reason and an unknown action are 422 (all before
   anything is read), then verify and its undo go through, on the old MemoryDB
 
-New: the route table is exactly spec §6's (with /assets, / and /openapi.json, and the peers and
-freshness addresses) and in the feature order; ``feature_router``: a window's ``web_router()``
-when it has one, else its ``router`` (spec §13), which is how ``create_app`` mounts every feature;
-the screen files and their default folder; /openapi.json on, the docs pages off; the host and
-origin checks and their nesting; the 503 answers (NotReady: the feature's text and one warning
-line; anything else: the fixed sentence and its traceback in the log); the assembled app reaches
-peers and freshness; making the app reads no setting and prepares no feature.
+New: the route table is exactly spec §6's (with /assets, / and /openapi.json, and the peers,
+freshness and flows addresses) and in the feature order; ``feature_router``: a window's
+``web_router()`` when it has one, else its ``router`` (spec §13), which is how ``create_app``
+mounts every feature; the screen files and their default folder; /openapi.json on, the docs pages
+off; the host and origin checks and their nesting; the 503 answers (NotReady: the feature's text
+and one warning line; anything else: the fixed sentence and its traceback in the log); the
+assembled app reaches peers, freshness and flows; making the app reads no setting and prepares no
+feature.
 """
 from __future__ import annotations
 
@@ -35,9 +36,10 @@ import research_desk
 from research_desk.core import db as core_db
 from research_desk.core import settings
 from research_desk.core.settings import NotReady
-from research_desk.features import companies, compare, coverage, freshness, peers, reports, review
+from research_desk.features import companies, compare, coverage, flows, freshness, peers, reports, review
 from research_desk.features.companies import service as companies_service
 from research_desk.features.coverage import service as coverage_service
+from research_desk.features.flows import service as flows_service
 from research_desk.features.freshness import service as freshness_service
 from research_desk.features.peers import service as peers_service
 from research_desk.features.prices import service as prices_service
@@ -63,6 +65,7 @@ from .fakes import (
     UNEXPECTED,
     FakeCompanies,
     FakeCoverage,
+    FakeFlows,
     FakeFreshness,
     FakePeers,
     FakeReports,
@@ -101,7 +104,7 @@ def test_the_route_table_is_exactly_spec_section_6(app, dist):
 
 
 def test_the_features_are_registered_in_the_list_order(app):
-    assert FEATURES == [companies, reports, compare, coverage, review, peers, freshness]
+    assert FEATURES == [companies, reports, compare, coverage, review, peers, freshness, flows]
     assert [route.path for route in served_routes(app)] == [
         '/openapi.json',
         '/api/health',
@@ -113,6 +116,7 @@ def test_the_features_are_registered_in_the_list_order(app):
         '/api/review/{rid}/pages/{page}', '/api/review/{rid}/action', '/api/review/undo/{token}',
         '/api/stocks/{code}/peers', '/api/peers/search',                                        # peers
         '/api/freshness',                                                                       # freshness
+        '/api/flows', '/api/stocks/{code}/flows',                                               # flows
         '/assets',
         '/',
     ]
@@ -146,12 +150,13 @@ def test_feature_router_prefers_web_router_to_router():
 
 
 def test_feature_router_of_the_real_windows():
-    # peers binds a command, so its window hands its router out through web_router(). Once that
-    # has run, the package also has an attribute `router`: the submodule, not a router - which is
-    # why web_router is looked at first.
-    router = app_module.feature_router(peers)
-    assert isinstance(router, APIRouter)
-    assert router is peers.web_router()
+    # peers and flows bind a command, so their windows hand their routers out through web_router().
+    # Once that has run, the package also has an attribute `router`: the submodule, not a router -
+    # which is why web_router is looked at first.
+    for window in (peers, flows):
+        router = app_module.feature_router(window)
+        assert isinstance(router, APIRouter), window.__name__
+        assert router is window.web_router()
     for window in (companies, reports, compare, coverage, review, freshness):
         assert app_module.feature_router(window) is window.router, window.__name__
 
@@ -457,6 +462,20 @@ def test_the_assembled_app_reaches_peers_and_freshness(app):
         assert client.get('/api/freshness').json() == FakeFreshness.ANSWER
 
 
+def test_the_assembled_app_reaches_flows(app):
+    app.dependency_overrides[flows_service.get_service] = FakeFlows
+    with TestClient(app) as client:
+        # mounted through its window's web_router(), the request values handed over as checked
+        assert client.get('/api/flows').json() == {'investor': 'pe_fund', 'min_cap': 1000, 'date': None,
+                                                   'sort': 'score', 'limit': 50}
+        assert client.get('/api/flows?investor=other_corp&min_cap=0&date=2026-10-08&sort=amount&limit=200').json() == {
+            'investor': 'other_corp', 'min_cap': 0, 'date': '2026-10-08', 'sort': 'amount', 'limit': 200}
+        assert client.get('/api/flows?limit=201').status_code == 422
+        assert client.get('/api/stocks/178320/flows').json() == {'code': '178320', 'period': '3m'}
+        assert client.get('/api/stocks/178320/flows?period=1y').json() == {'code': '178320', 'period': '1y'}
+        assert client.get('/api/stocks/5930/flows').status_code == 422
+
+
 def test_new_routes_validate_before_mutating(app, monkeypatch):
     memory = MemoryDB()
     made = []
@@ -489,7 +508,7 @@ def test_making_the_app_reads_no_setting_and_prepares_no_feature(dist, monkeypat
     first, second = create_app(dist=dist), create_app(dist=dist)
     assert isinstance(first, FastAPI) and first is not second
     for module in (companies_service, reports_service, coverage_service, review_service, prices_service,
-                   peers_service, freshness_service):
+                   peers_service, freshness_service, flows_service):
         assert module._service is None, module.__name__
     # and the module makes no app when it is imported (the web command makes one)
     assert not [value for value in vars(app_module).values() if isinstance(value, FastAPI)]

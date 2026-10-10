@@ -21,9 +21,25 @@ the names below.
   and writes nothing. Settings: the KIS account shared with the price update (KIS_APP_KEY,
   KIS_APP_SECRET, KIS_BASE_URL, KIS_TOKEN_CACHE) and FLOWS_MAX_CALLS_PER_SEC (default 10);
   ``scripts/run-prices.ps1`` runs it after the price update for the daily schedule.
+- ``web_router()``: the FastAPI router of ``GET /api/flows`` (one ranked day's ranking) and
+  ``GET /api/stocks/{code}/flows`` (one company's flows), imported when called (``router.py``;
+  the answers in ``service.py``). Its readiness failures are ``NotReady("수급", <reason>)`` with the
+  reasons ``DB 접속 설정(SUPABASE_URL, SUPABASE_SERVICE_KEY)이 없습니다``, ``종목표 파일을 읽을 수
+  없습니다`` and, on the ranking only, ``아직 순위를 매긴 날이 없습니다(python -m research_desk flows
+  update)`` (looked at on every request, not remembered); the coverage window's NotReady (report
+  counts) and the prices window's (adjusted closes) pass through unchanged. The process-wide
+  service is ``service.get_service()``.
 
 Importing this window loads no FastAPI, HTTP library, KIS client, DB client or other feature's
-window: ``cli.py`` imports it for every command.
+window: ``cli.py`` imports it for every command. ``web_router()`` loads FastAPI and the router; the
+coverage and prices windows load when a web answer needs them.
 """
 from .jobs import register as register_jobs
 from .service import latest_run
+
+
+def web_router():
+    """The FastAPI router of the two web addresses (loads FastAPI and the router now)."""
+    from .router import router
+
+    return router
