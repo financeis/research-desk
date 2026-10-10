@@ -1,4 +1,5 @@
-"""features.prices logic: the per-stock values, market medians and excess, run status (spec §8).
+"""features.prices logic: the per-stock values, market medians and excess, run status (spec §8),
+and how a received stock's adjusted-close history is written.
 
 Pure functions, no DB, network, settings or files. Boundary values checked here:
 - a return over N trading days needs N+1 closes (the latest and the one N trading days back):
@@ -7,11 +8,14 @@ Pure functions, no DB, network, settings or files. Boundary values checked here:
 - halted / admin_issue flags and their order;
 - the market median: KOSDAQ GLOBAL counted as KOSDAQ, stocks without that period's return left
   out, a market nobody has a return in gives no median (so no excess);
-- run status at the 20 % boundary (ok / partial / failed).
+- run status at the 20 % boundary (ok / partial / failed);
+- the history: the close series of a stock, the probe days (the series' first day and the
+  previous snapshot's day), the whole series when there is no history, a shorter one or a changed
+  close (a split or bonus issue re-scales the past adjusted closes), else only the new days.
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -274,3 +278,105 @@ def test_wanted_codes_keep_the_order_once_each():
 def test_one_plain_string_is_not_a_list_of_codes():
     with pytest.raises(TypeError):
         logic.wanted_codes("005930")
+
+
+# ── the adjusted-close history ───────────────────────────────────────────────
+
+def series(closes, start=START):
+    """A received stock's close series: (day, close) on weekdays from ``start``."""
+    return logic.close_series(daily(closes, start=start))
+
+
+def days_of(rows):
+    return [row["trade_date"] for row in rows]
+
+
+def test_the_close_series_is_the_usable_rows_as_day_and_whole_close():
+    rows = daily([100, None, 0, 110, 121])
+    assert logic.close_series(rows) == [(rows[0]["date"], 100), (rows[3]["date"], 110), (rows[4]["date"], 121)]
+    assert logic.close_series([]) == []
+    assert all(isinstance(close, int) for _, close in logic.close_series(daily([100.0, 101.0])))
+
+
+def test_history_rows_are_the_code_the_iso_day_and_the_whole_close():
+    s = series([100, 101])
+    assert logic.history_rows("005930", s, None, {}) == [
+        {"stock_code": "005930", "trade_date": "2026-01-05", "close": 100},
+        {"stock_code": "005930", "trade_date": "2026-01-06", "close": 101},
+    ]
+
+
+def test_without_a_previous_snapshot_day_the_whole_series_is_written():
+    s = series([100, 101, 102])
+    assert logic.history_probes(s, None) == ()
+    assert days_of(logic.history_rows("005930", s, None, {})) == ["2026-01-05", "2026-01-06", "2026-01-07"]
+
+
+def test_a_previous_day_the_series_does_not_have_writes_the_whole_series():
+    s = series([100, 101, 102])                       # 2026-01-05 … 07
+    for previous in ("2025-12-31", "2026-01-10"):     # before the series, or a day it lacks
+        assert logic.history_probes(s, previous) == ()
+        assert len(logic.history_rows("005930", s, previous, {previous: 100})) == 3
+
+
+def test_the_probes_are_the_first_day_and_the_previous_day():
+    s = series([100, 101, 102, 103])
+    assert logic.history_probes(s, "2026-01-07") == ("2026-01-05", "2026-01-07")
+    assert logic.history_probes(s, date(2026, 1, 7)) == ("2026-01-05", "2026-01-07")
+    assert logic.history_probes(s, "2026-01-05") == ("2026-01-05",)   # the same day once
+
+
+def test_a_matching_stored_history_gets_only_the_days_after_the_previous_day():
+    s = series([100, 101, 102, 103, 104])             # 2026-01-05 … 09
+    stored = {"2026-01-05": 100, "2026-01-07": 102}
+    assert logic.history_rows("005930", s, "2026-01-07", stored) == [
+        {"stock_code": "005930", "trade_date": "2026-01-08", "close": 103},
+        {"stock_code": "005930", "trade_date": "2026-01-09", "close": 104},
+    ]
+
+
+def test_nothing_new_writes_nothing():
+    s = series([100, 101, 102])
+    assert logic.history_rows("005930", s, "2026-01-07", {"2026-01-05": 100, "2026-01-07": 102}) == []
+
+
+def test_no_stored_row_on_the_first_day_means_a_shorter_history_written_whole():
+    s = series([100, 101, 102, 103, 104])
+    assert len(logic.history_rows("005930", s, "2026-01-07", {"2026-01-07": 102})) == 5
+
+
+def test_no_stored_row_on_the_previous_day_writes_the_whole_series():
+    s = series([100, 101, 102, 103, 104])
+    assert len(logic.history_rows("005930", s, "2026-01-07", {"2026-01-05": 100})) == 5
+
+
+def test_a_changed_close_on_the_previous_day_writes_the_whole_series():
+    s = series([50, 51, 52, 103, 104])                # a 2-for-1 split on 01-08: the past halved
+    assert len(logic.history_rows("005930", s, "2026-01-07", {"2026-01-05": 100, "2026-01-07": 104})) == 5
+
+
+def test_a_changed_close_on_the_first_day_writes_the_whole_series():
+    # KIS re-scaled the past a day late: the previous day still matches, the oldest one does not
+    s = series([50, 51, 52, 103, 104])
+    assert len(logic.history_rows("005930", s, "2026-01-08", {"2026-01-05": 100, "2026-01-08": 103})) == 5
+
+
+def test_stored_closes_are_compared_as_whole_won():
+    s = series([100, 101, 102])
+    assert logic.history_rows("005930", s, "2026-01-06", {"2026-01-05": "100", "2026-01-06": 101.0}) == [
+        {"stock_code": "005930", "trade_date": "2026-01-07", "close": 102}]
+
+
+@pytest.mark.parametrize("value,day", [
+    (date(2026, 10, 8), "2026-10-08"), (datetime(2026, 10, 8, 23, 59, tzinfo=timezone.utc), "2026-10-08"),
+    ("2026-10-08", "2026-10-08"), ("2026-10-08T00:00:00+00:00", "2026-10-08"),
+])
+def test_a_day_is_written_as_iso_text(value, day):
+    assert logic.iso_day(value) == day
+
+
+@pytest.mark.parametrize("value,error", [(None, TypeError), (20261008, TypeError), ("10/08/2026", ValueError),
+                                         ("", ValueError)])
+def test_what_is_not_a_day_is_refused(value, error):
+    with pytest.raises(error):
+        logic.iso_day(value)

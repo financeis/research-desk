@@ -20,11 +20,19 @@ Units, the same in the DB and in the window: returns and excess returns are perc
   ``partial``; more → ``failed``.
 - ``no_data``: the stock was not received in this run; its stored row keeps its previous values
   and gets this flag.
+- The adjusted-close history (``stock_price_daily``, one row per stock and day) is the series'
+  closes, written from what KIS gives every run, never adjusted here. A received stock gets only
+  the days after its previous snapshot's day when the stored history has the series' first day
+  and that previous day, both with this run's close. Otherwise its whole series is written: no
+  history yet, a shorter one (no row on the series' first day), one that stops before the
+  previous day, or a stored close that differs. A split, reverse split or bonus issue re-scales
+  every adjusted close before it, so it shows on the series' first day even when KIS re-scales a
+  day late. The returns never come from the history.
 """
 from __future__ import annotations
 
 import statistics
-from datetime import date
+from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
@@ -170,6 +178,57 @@ def with_no_data(flags: Optional[Iterable[str]]) -> list[str]:
     present = list(dict.fromkeys([NO_DATA, *(flags or [])]))
     return ([flag for flag in FLAG_ORDER if flag in present]
             + [flag for flag in present if flag not in FLAG_ORDER])
+
+
+# ── the adjusted-close history ───────────────────────────────────────────────
+
+def close_series(rows: Iterable[Mapping[str, Any]]) -> list[tuple[date, int]]:
+    """The series (``usable_rows``) as ``(day, adjusted close in whole won)``, oldest first."""
+    return [(row["date"], int(row["close"])) for row in usable_rows(rows)]
+
+
+def history_probes(series: Sequence[tuple[date, Any]], previous_day: Any) -> tuple[str, ...]:
+    """The ISO days whose stored closes decide how a received stock's history is written: the
+    series' first day and ``previous_day`` (the stock's snapshot as_of before this run), once when
+    they are the same day. Empty when the whole series is written whatever is stored: no previous
+    day, or the series does not have it."""
+    if previous_day is None or not series:
+        return ()
+    previous = iso_day(previous_day)
+    days = [day.isoformat() for day, _ in series]
+    if previous not in days:
+        return ()
+    return tuple(dict.fromkeys((days[0], previous)))
+
+
+def history_rows(code: str, series: Sequence[tuple[date, Any]], previous_day: Any,
+                 stored: Mapping[str, Any]) -> list[dict]:
+    """The history rows of one received stock to upsert, oldest first:
+    ``{"stock_code", "trade_date": "YYYY-MM-DD", "close": whole won}``.
+
+    ``series``: ``close_series`` of this run. ``previous_day``: the stock's snapshot as_of before
+    this run (None without one). ``stored``: the stock's stored closes on the probe days
+    (``history_probes``) by ISO day; a day without a row is missing. Only the days after
+    ``previous_day`` when every probe day is stored with this run's close; else the whole series.
+    """
+    closes = {day.isoformat(): int(close) for day, close in series}
+    probes = history_probes(series, previous_day)
+    if probes and all(_whole(stored.get(day)) == closes[day] for day in probes):
+        after = iso_day(previous_day)
+        closes = {day: close for day, close in closes.items() if day > after}
+    return [{"stock_code": code, "trade_date": day, "close": close} for day, close in closes.items()]
+
+
+def iso_day(value: Any) -> str:
+    """A day as ``YYYY-MM-DD``: a date (a datetime counts by its date), or text that starts with an
+    ISO day. TypeError for anything else, ValueError for text that is not a day."""
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, str):
+        return date.fromisoformat(value[:10]).isoformat()
+    raise TypeError(f"a day must be a date or YYYY-MM-DD text, not {type(value).__name__}")
 
 
 # ── the window shape ─────────────────────────────────────────────────────────
