@@ -1,0 +1,137 @@
+/* The flows screens: 수급 랭킹 (?view=flows) and the company page's 수급 tab. */
+
+.flows-page {
+  display: grid;
+  gap: 16px;
+}
+.flows-page .page-heading h1 {
+  margin: 4px 0 6px;
+}
+.flows-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 18px;
+}
+.flows-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.flows-field select,
+.flows-field input {
+  height: 30px;
+  padding: 0 8px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+}
+.flows-field input {
+  width: 84px;
+  text-align: right;
+}
+.flows-guide {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.flows-guide summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.flows-guide ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  line-height: 1.7;
+}
+.flows-basis {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.flows-table .flow-ref {
+  background: #fafbfc;
+}
+.flow-row {
+  cursor: pointer;
+}
+.flow-row:hover td {
+  background: #f6f8fa;
+}
+.flow-row.active td {
+  background: #eef3f8;
+}
+.flow-rank {
+  font-variant-numeric: tabular-nums;
+}
+/* Ranks 1–3: the source note's pink cells. */
+td.flow-hot {
+  background: #fbe3e6;
+  color: #a1273a;
+  font-weight: 700;
+}
+.flow-row:hover td.flow-hot,
+.flow-row.active td.flow-hot {
+  background: #f7d3d8;
+}
+.flows-empty {
+  padding: 22px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.flows-more {
+  justify-self: center;
+}
+.flow-note {
+  margin-left: 8px;
+}
+.flows-tab-grid {
+  display: grid;
+  grid-template-columns: minmax(300px, 380px) 1fr;
+  gap: 16px;
+  align-items: start;
+}
+.flows-chart-panel h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+.flow-chart svg {
+  width: 100%;
+  height: auto;
+}
+.flow-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.flow-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.flow-legend i {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+.flow-legend i.flow-line {
+  width: 14px;
+  height: 2px;
+  border-radius: 0;
+}
+@media (max-width: 1100px) {
+  .flows-tab-grid {
+    grid-template-columns: 1fr;
+  }
+}

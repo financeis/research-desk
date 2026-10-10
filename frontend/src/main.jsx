@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  Activity,
   ArrowDown,
   ArrowLeft,
   ArrowRight,
@@ -34,6 +35,8 @@ import ReviewQueue from "./ReviewQueue";
 import Peers from "./peers/Peers";
 import ThemeSearch from "./peers/ThemeSearch";
 import StatusLine from "./freshness/StatusLine";
+import FlowRanking from "./flows/FlowRanking";
+import FlowTab from "./flows/FlowTab";
 
 const number = (value) =>
   value == null
@@ -381,7 +384,9 @@ function App() {
         ? "리포트 검토"
         : view === "themes"
           ? "테마로 기업 찾기"
-          : "기업 리서치";
+          : view === "flows"
+            ? "수급 랭킹"
+            : "기업 리서치";
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -453,6 +458,13 @@ function App() {
           >
             <Telescope size={18} />
             테마로 기업 찾기
+          </button>
+          <button
+            className={`nav-item ${view === "flows" ? "active" : ""}`}
+            onClick={() => setView("flows")}
+          >
+            <Activity size={18} />
+            수급 랭킹
           </button>
           <button
             className={`nav-item ${view === "reports" ? "active" : ""}`}
@@ -535,7 +547,7 @@ function App() {
         <header className="topbar">
           <div>
             워크스페이스 <ChevronRight size={13} /> {pageLabel}{" "}
-            {stock && !["market", "review", "themes"].includes(view) && (
+            {stock && !["market", "review", "themes", "flows"].includes(view) && (
               <>
                 <ChevronRight size={13} />
                 <strong>{stock.name}</strong>
@@ -553,6 +565,8 @@ function App() {
             <ReviewQueue onChanged={() => setReload((x) => x + 1)} />
           ) : view === "themes" ? (
             <ThemeSearch onStock={(c) => pickStock(c, "peers")} />
+          ) : view === "flows" ? (
+            <FlowRanking onStock={(c) => pickStock(c)} />
           ) : (
             <>
               <div className="page-heading">
@@ -694,10 +708,17 @@ function App() {
                     >
                       유사 기업
                     </button>
+                    <button
+                      className={stockMode === "flows" ? "active" : ""}
+                      onClick={() => setStockMode("flows")}
+                    >
+                      수급
+                    </button>
                   </div>
                   {stockMode === "activity" && (
                     <StockActivity key={code} code={code} />
                   )}
+                  {stockMode === "flows" && <FlowTab key={code} code={code} />}
                   {stockMode === "peers" && (
                     <Peers
                       key={code}
