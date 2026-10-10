@@ -105,10 +105,13 @@ above 0, whose market cap is there, above 0 and at least ``min_cap`` 억 원, an
 investor's rank and window size. pct = the amount in won ÷ the market cap × 100. The TS score
 (``ts_score(N, rank)``) = 100 × (N − rank) ÷ (N − 1): 100 for the first, 0 for the N-th (100 for a
 one-day window). The CS score (``cs_scores(pcts)``) = 100 × (r − 1) ÷ (M − 1), r the rank of the
-row's pct from the smallest in the group (ties get their average rank), M the group size; 100 when
-M = 1. score = (TS + CS) ÷ 2. Sorts (``SORTS``), larger first and codes ascending: ``score`` score →
-pct → amount → code; ``rank`` TS → pct → amount → code; ``pct`` pct → TS → amount → code;
-``amount`` amount → pct → code. ``total`` is the group size; ``rows`` are the first ``limit`` rows
+row's pct from the smallest in the group (equal pcts get their average rank), M the group size; 100
+when M = 1. score = (TS + CS) ÷ 2. Sorts (``SORTS``), larger first and codes ascending: ``score``
+score → pct → amount → code; ``rank`` TS → pct → amount → code; ``pct`` pct → TS → amount → code;
+``amount`` amount → pct → code. pct, TS, CS and score are worked out and compared exactly (as
+fractions): truly equal values tie and go on to the next key, and only exactly equal pcts share a CS
+rank. The returned ``pct`` and ``score`` (and ``ts_score`` / ``cs_scores``) are those exact values
+rounded once to floats. ``total`` is the group size; ``rows`` are the first ``limit`` rows
 in that order, ``no`` counted from 1, each ``{"no", "code", "market_cap" (won), "amount" (won),
 "pct", "rank", "window_days", "short_history", "score", "ref_ranks": {"pe_fund", "foreigner",
 "other_corp"}}`` (a missing reference rank is None). An unknown investor or sort, or a negative
@@ -122,6 +125,7 @@ from __future__ import annotations
 from bisect import bisect_left, bisect_right
 from datetime import date, datetime, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from fractions import Fraction
 from typing import Any, Iterable, Mapping, NamedTuple, Optional, Sequence
 from zoneinfo import ZoneInfo
 
@@ -383,29 +387,39 @@ def run_status(total: int, failed: int) -> str:
 # ── the ranking table ────────────────────────────────────────────────────────
 
 def ts_score(window_days: int, rank: int) -> float:
-    """100 × (N − rank) ÷ (N − 1); 100 for a one-day window."""
+    """100 × (N − rank) ÷ (N − 1) as a float; 100 for a one-day window."""
+    return float(_ts_exact(window_days, rank))
+
+
+def cs_scores(pcts: Sequence[Any]) -> list[float]:
+    """Each pct's 100 × (r − 1) ÷ (M − 1) as a float, r its rank from the smallest (equal values:
+    their average rank), in the input order; [100.0] for one value."""
+    return [float(score) for score in _cs_exact(pcts)]
+
+
+def _ts_exact(window_days: int, rank: int) -> Fraction:
     if window_days <= 1:
-        return 100.0
-    return 100 * (window_days - rank) / (window_days - 1)
+        return Fraction(100)
+    return Fraction(100 * (window_days - rank), window_days - 1)
 
 
-def cs_scores(pcts: Sequence[float]) -> list[float]:
-    """Each pct's 100 × (r − 1) ÷ (M − 1), r its rank from the smallest (ties: the average rank),
-    in the input order; [100.0] for one value."""
+def _cs_exact(pcts: Sequence[Any]) -> list[Fraction]:
     count = len(pcts)
     if count <= 1:
-        return [100.0] * count
+        return [Fraction(100)] * count
     order = sorted(range(count), key=lambda i: pcts[i])
-    ranks = [0.0] * count
+    scores = [Fraction(0)] * count
     start = 0
     while start < count:
         end = start
         while end + 1 < count and pcts[order[end + 1]] == pcts[order[start]]:
             end += 1
+        # places start..end (from 0) share the average rank (start + end) / 2 + 1
+        score = Fraction(100 * (start + end), 2 * (count - 1))
         for position in range(start, end + 1):
-            ranks[order[position]] = (start + end) / 2 + 1
+            scores[order[position]] = score
         start = end + 1
-    return [100 * (rank - 1) / (count - 1) for rank in ranks]
+    return scores
 
 
 _SORT_KEYS = {
@@ -438,10 +452,11 @@ def ranking_table(rows: Iterable[Mapping[str, Any]], investor: str = DEFAULT_INV
             continue
         amount = int(net) * WON_PER_MILLION
         days, place = int(window_days), int(rank)
+        # exact values: a float sum of TS and CS would order truly equal scores by rounding noise
         group.append({"row": row, "code": str(row["stock_code"]), "market_cap": cap, "amount": amount,
-                      "pct": amount * 100 / cap, "rank": place, "window_days": days,
-                      "ts": ts_score(days, place)})
-    for entry, cs in zip(group, cs_scores([entry["pct"] for entry in group])):
+                      "pct": Fraction(amount * 100, cap), "rank": place, "window_days": days,
+                      "ts": _ts_exact(days, place)})
+    for entry, cs in zip(group, _cs_exact([entry["pct"] for entry in group])):
         entry["score"] = (entry["ts"] + cs) / 2
     group.sort(key=_SORT_KEYS[sort])
     return {"total": len(group),
@@ -455,11 +470,11 @@ def _table_row(no: int, entry: Mapping[str, Any]) -> dict:
         "code": entry["code"],
         "market_cap": entry["market_cap"],
         "amount": entry["amount"],
-        "pct": entry["pct"],
+        "pct": float(entry["pct"]),
         "rank": entry["rank"],
         "window_days": entry["window_days"],
         "short_history": short_history(entry["window_days"]),
-        "score": entry["score"],
+        "score": float(entry["score"]),
         "ref_ranks": {key: _whole(row.get(rank_column(key))) for key in REF_INVESTORS},
     }
 

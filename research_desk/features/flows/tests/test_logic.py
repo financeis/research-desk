@@ -674,6 +674,36 @@ def test_score_sort_breaks_ties_by_pct_then_amount_then_code():
     assert codes(logic.ranking_table(rows)) == ["000005", "000004", "000006", "000007"]
 
 
+def test_truly_equal_scores_from_different_ts_and_cs_pairs_go_by_pct():
+    # 250 stocks with 250 days; pct position p (1 = the smallest pct) and rank p − 10 give every stock
+    # from p = 11 on the score 100 × (259 / 249) / 2, from 240 different TS / CS pairs. In floating
+    # point those sums differ by a rounding step, so the order would follow the noise.
+    rows = [day_row(f"{p:06d}", p, p - 10 if p > 10 else p + 240) for p in range(1, 251)]
+    table = logic.ranking_table(rows, limit=250)
+    assert codes(table) == [f"{p:06d}" for p in range(250, 10, -1)] + [f"{p:06d}" for p in range(10, 0, -1)]
+    assert codes(table).index("000030") < codes(table).index("000020")
+    scores = [row["score"] for row in table["rows"]]
+    assert set(scores[:240]) == {12950 / 249} and set(scores[240:]) == {450 / 249}
+
+
+def test_equal_ts_scores_from_different_window_sizes_go_by_pct():
+    rows = [day_row("000001", 100, 28),             # TS 100 × 222 / 249, pct 0.1
+            day_row("000002", 200, 10, n=84)]       # TS 100 × 74 / 83, the same; pct 0.2
+    assert codes(logic.ranking_table(rows, sort="rank")) == ["000002", "000001"]
+
+
+def test_percents_are_compared_exactly():
+    # Two percents one rounding step apart (the same float): the larger goes first and gets the
+    # higher CS rank, though the other has the better TS.
+    rows = [day_row("000001", 1, 1, cap=10**17 + 1),   # the smaller pct, TS 100
+            day_row("000002", 1, 2, cap=10**17)]       # the larger pct, TS 100 × 248 / 249
+    assert codes(logic.ranking_table(rows, sort="pct")) == ["000002", "000001"]
+    table = logic.ranking_table(rows)
+    assert codes(table) == ["000002", "000001"]
+    assert [row["score"] for row in table["rows"]] == pytest.approx([(100 * 248 / 249 + 100) / 2, 50.0])
+    assert table["rows"][0]["pct"] == table["rows"][1]["pct"] == 1e-9
+
+
 def test_rank_sort_is_ts_then_pct_then_amount_then_code():
     rows = [
         day_row("000001", 900, 2),                      # second-best TS, the largest pct
