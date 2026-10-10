@@ -13,6 +13,8 @@ closes of 0 before a listing day. Boundary values checked here:
 - the fill plan: complete coverage (one block), a new stock (11 blocks), a new listing (stops at
   its padding), a known data start, an interrupted first fill, a long outage (only the missed
   stretch), a hole, KIS having nothing older;
+- the cleanup cutoff: 470 days before the anchor, but never after the calendar's retention start
+  (an anchor moved on by a weekday holiday), and without a calendar the 470 days alone;
 - the day's market cap only from a snapshot of that day;
 - run status at the 20 % boundary, the same as the price update's;
 - the ranking group, TS / CS / score, the average rank of ties, a group of one, the four sorts and
@@ -544,6 +546,31 @@ def test_raw_rows_older_than_470_days_are_cut():
     assert logic.raw_cutoff(date(2026, 10, 9)) == date(2025, 6, 26)
     assert logic.raw_cutoff("2026-10-09") == date(2025, 6, 26)
     assert logic.raw_cutoff(D) < logic.retention_start(MARKET)   # the raw rows outlast the range
+
+
+def test_the_cleanup_cutoff_is_the_raw_cutoff_while_that_is_older_than_the_retention_start():
+    assert list(inspect.signature(logic.cleanup_cutoff).parameters) == ["anchor", "calendar"]
+    assert logic.cleanup_cutoff(D, CALENDAR) == logic.raw_cutoff(D) == date(2025, 6, 26)
+    assert logic.cleanup_cutoff(D, MARKET) == logic.raw_cutoff(D)
+    # the same input types as raw_cutoff and retention_start: dates or "YYYY-MM-DD" text
+    assert logic.cleanup_cutoff(D.isoformat(), [day.isoformat() for day in CALENDAR]) == date(2025, 6, 26)
+
+
+def test_the_cleanup_never_cuts_into_the_retention_range():
+    # A weekday-holiday run: the anchor moves on (anchor_day gives the holiday) while KIS's calendar
+    # stays, so anchor − 470 days can pass the calendar's retention start.
+    start = logic.retention_start(CALENDAR)
+    level = start + timedelta(days=logic.RAW_RETENTION_DAYS)   # anchor − 470 days = the retention start
+    assert logic.cleanup_cutoff(level, CALENDAR) == start
+    assert logic.cleanup_cutoff(level + timedelta(days=1), CALENDAR) == start
+    assert logic.cleanup_cutoff(level + timedelta(days=60), CALENDAR) == start
+    assert logic.cleanup_cutoff(level - timedelta(days=1), CALENDAR) == start - timedelta(days=1)
+    assert logic.raw_cutoff(level + timedelta(days=1)) > start   # raw_cutoff alone would cut into it
+
+
+def test_the_cleanup_cutoff_without_a_calendar_is_the_raw_cutoff():
+    assert logic.cleanup_cutoff(D, []) == logic.raw_cutoff(D)
+    assert logic.cleanup_cutoff("2026-10-09", ()) == date(2025, 6, 26)
 
 
 def test_only_the_latest_60_ranked_days_stay():

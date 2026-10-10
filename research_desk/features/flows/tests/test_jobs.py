@@ -33,8 +33,8 @@ Checked:
 - ok / partial: the base trading day D ranked once with the market caps of the snapshots dated D
   only; a stock without one stays unranked and is ranked by a later run of the same day once its
   snapshot comes, ranked rows keep their values; the ranked-day list gets D (insert, or the count
-  only), not when nothing is ranked; raw rows before the cutoff (470 days before the anchor) and
-  ranked days beyond the latest 60 are deleted;
+  only), not when nothing is ranked; raw rows before the cutoff (470 days before the anchor, but
+  never after the calendar's retention start) and ranked days beyond the latest 60 are deleted;
 - the run record (running → ok / partial / failed with as_of, counts, days ranked, message), a
   crash or an interrupt closing it as failed, the summary line (stdout for ok / partial, stderr for
   failed) and exit codes;
@@ -718,6 +718,23 @@ def test_old_raw_rows_and_ranked_days_beyond_60_are_cleaned_up(world):
     assert delete.filter_values("lt", "trade_date") == [logic.raw_cutoff(D).isoformat()] == ["2025-06-26"]
     days = [row["trade_date"] for row in world.db.rows(DAYS)]
     assert len(days) == 60 and days[0] == PAST[-60].isoformat() and days[-1] == "2026-10-09"
+
+
+def test_the_cleanup_never_deletes_rows_inside_the_retention_range(world, monkeypatch):
+    # anchor − N days later than the calendar's retention start (as on a run during a long holiday,
+    # when the anchor moves on and the calendar stays): the cutoff is the retention start instead
+    monkeypatch.setattr(logic, "RAW_RETENTION_DAYS", 30)
+    assert logic.raw_cutoff(D) > CALENDAR[0]
+    world.caps()
+    world.db.add_raw("999990", PAST[-311])   # before the retention start
+    world.db.add_raw("999990", PAST[-310])   # its first day
+    world.db.add_raw("999990", PAST[-200])
+    assert update() == 0
+    [delete] = world.db.queries(DAILY, "delete")
+    assert delete.filter_values("lt", "trade_date") == [CALENDAR[0].isoformat()]
+    assert stored(world.db, "999990") == [PAST[-310], PAST[-200]]
+    for code in CODES:   # the first run's 330 days, cut back to the retention range only
+        assert stored(world.db, code) == CALENDAR
 
 
 # ── the access token: once a run, before any stock ───────────────────────────

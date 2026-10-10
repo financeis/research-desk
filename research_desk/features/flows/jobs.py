@@ -46,8 +46,10 @@ order), the calendar stock first:
    snapshots dated D (``logic.day_market_caps``; a stock without one stays unranked that day, and a
    later run of the same day ranks it once its snapshot comes); when D then has ranked stocks it is
    put in the ranked-day list (a new day with every column, a listed day gets its count only); raw
-   rows before ``logic.raw_cutoff(anchor)`` and ranked days beyond the latest 60
-   (``logic.days_to_drop``) are deleted. failed: no ranking and no cleanup (the raw rows saved stay);
+   rows before ``logic.cleanup_cutoff(anchor, calendar)`` (the anchor day − 470 days, but never
+   after the calendar's retention start, so no row the fill plan needs is deleted) and ranked days
+   beyond the latest 60 (``logic.days_to_drop``) are deleted. failed: no ranking and no cleanup (the
+   raw rows saved stay);
 7. the run record is closed with the status, as_of (the latest trading day received), the counts,
    the days ranked (1 when D is a ranked day after this run, else 0) and a message (partial /
    failed: what it meant, the first 20 codes not received, the first reason);
@@ -283,6 +285,7 @@ class _Collected(NamedTuple):
     failures: dict[str, str]     # code → reason, the stocks not received
     skipped: int                 # stocks not asked once the run had failed
     calendar_problem: Optional[str] = None
+    calendar: Sequence[date] = ()   # the run's trading-day calendar (empty without one)
 
 
 class _Outcome(NamedTuple):
@@ -330,7 +333,7 @@ def _work(sb: Any, kis: Any, run_id: int, entries: Sequence[StockEntry], anchor:
     as_of = logic.ranking_day(collected.days)
     days_ranked = 0
     if status != logic.FAILED:
-        days_ranked = _rank_and_clean(sb, run_id, as_of, codes, anchor)
+        days_ranked = _rank_and_clean(sb, run_id, as_of, codes, anchor, collected.calendar)
     return _Outcome(status, as_of, len(collected.received), days_ranked, _note(status, collected.skipped),
                     _run_message(status, collected.failures, collected.skipped))
 
@@ -361,8 +364,9 @@ def _collect(sb: Any, kis: Any, codes: Sequence[str], anchor: date) -> _Collecte
         failures[code] = problem
         logger.warning(NOT_RECEIVED, code, problem)
         if logic.run_status(len(codes), len(failures)) == logic.FAILED:
-            return _Collected(received, days, failures, len(rest) - i - 1)   # failed whatever comes next
-    return _Collected(received, days, failures, 0)
+            # failed whatever comes next
+            return _Collected(received, days, failures, len(rest) - i - 1, calendar=calendar)
+    return _Collected(received, days, failures, 0, calendar=calendar)
 
 
 def _fill_plan(calendar: list[date], coverage: Optional[dict],
@@ -383,9 +387,11 @@ def _save(sb: Any, code: str, trading: logic.TradingRows, listed: dict[str, str]
     return date.fromisoformat(rows[-1]["trade_date"])
 
 
-def _rank_and_clean(sb: Any, run_id: int, day: Optional[date], codes: Sequence[str], anchor: date) -> int:
+def _rank_and_clean(sb: Any, run_id: int, day: Optional[date], codes: Sequence[str], anchor: date,
+                    calendar: Sequence[date]) -> int:
     """Rank the base trading day with that day's market caps, list it when it has ranked stocks,
-    then delete the old raw rows and ranked days. Returns the days ranked (0 or 1)."""
+    then delete the raw rows before ``logic.cleanup_cutoff(anchor, calendar)`` and the ranked days
+    beyond the latest 60. Returns the days ranked (0 or 1)."""
     from research_desk.features import prices   # the window's names, looked up when called
 
     days_ranked = 0
@@ -401,7 +407,7 @@ def _rank_and_clean(sb: Any, run_id: int, day: Optional[date], codes: Sequence[s
             else:
                 store.update_ranked_day(sb, text, stocks_ranked=ranked)
             days_ranked = 1
-    store.delete_daily_before(sb, logic.raw_cutoff(anchor).isoformat())
+    store.delete_daily_before(sb, logic.cleanup_cutoff(anchor, calendar).isoformat())
     drop = logic.days_to_drop(row["trade_date"] for row in store.read_ranked_days(sb))
     store.delete_ranked_days(sb, [old.isoformat() for old in drop])
     return days_ranked
