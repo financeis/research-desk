@@ -17,9 +17,10 @@ function reportNote(reports) {
     : "리포트 자료가 없습니다";
 }
 
-// The status line on top of every screen (spec §12.5): GET /api/freshness when the app loads and
-// again on the re-check button. Red with the reasons when either side is stale; grey when the
-// address fails (its sentence stays in the tooltip).
+// The status line on top of every screen (docs/contracts.md, GET /api/freshness): asked when the
+// app loads and again on the re-check button. Prices, flows and reports in that order; red with the
+// reasons when any of them is stale (prices and flows bring their own note); grey when the address
+// fails (its sentence stays in the tooltip).
 export default function StatusLine() {
   const [data, setData] = useState(null),
     [error, setError] = useState(""),
@@ -44,9 +45,11 @@ export default function StatusLine() {
     return () => controller.abort();
   }, [check]);
   const prices = data?.prices,
+    flows = data?.flows,
     reports = data?.reports;
   const notes = [];
   if (prices?.stale) notes.push(prices.note || "주가가 최신이 아닙니다");
+  if (flows?.stale) notes.push(flows.note || "수급이 최신이 아닙니다");
   if (reports?.stale) notes.push(reportNote(reports));
   const state = !data ? "unknown" : notes.length ? "stale" : "fresh";
   return (
@@ -54,7 +57,8 @@ export default function StatusLine() {
       {data ? (
         <>
           <span>
-            주가 {monthDay(prices?.as_of) || "기록 없음"} · 리포트{" "}
+            주가 {monthDay(prices?.as_of) || "기록 없음"} · 수급{" "}
+            {monthDay(flows?.as_of) || "기록 없음"} · 리포트{" "}
             {monthDay(reports?.latest_at) || "기록 없음"} 기준
           </span>
           {notes.map((note) => (
