@@ -123,8 +123,8 @@
  "rows": [{"no", "code", "name", "market", "market_cap", "amount", "pct", "rank", "window_days",
            "short_history", "score", "ref_ranks": {"pe_fund", "foreigner", "other_corp"}, "coverage"}]}
 ```
-- `date`는 응답에 쓴 날, `dates`는 순위를 매긴 날(최대 60개, 최신 먼저), `total`은 그룹의 종목 수(`limit` 전)다.
-- `rows`는 고른 정렬 순서로 최대 `limit`개이고 `no`는 1부터 매긴다. 그룹·점수·정렬 규칙은 `docs/business-rules.md`의 "수급 순위".
+- `date`는 응답에 쓴 날, `dates`는 순위를 매긴 날(최대 60개, 최신 먼저)이다. `total`은 그룹 — 고른 주체의 순매수가 0보다 크고, 그날 시총이 `min_cap`억 원 이상이고, 그 주체의 250일 순위가 있는 종목 — 의 수(`limit` 전)다.
+- `rows`는 고른 정렬 순서로 최대 `limit`개이고 `no`는 1부터 매긴다.
 - `market_cap`·`amount`는 원 단위 정수다(`amount` = 저장된 백만 원 값 × 1,000,000). `pct`는 % 실수(0.1146 = 0.1146%), `score`는 0~100 실수다(화면이 소수 한 자리로 보인다). `rank`는 고른 주체의 250일 순위, `short_history`는 `window_days < 250`이다. `ref_ranks`는 사모·외국인·기타법인의 250일 순위이고, 없으면 null.
 - `name`·`market`(`KOSPI`|`KOSDAQ`)은 종목표에서 읽는다. 종목표에 없으면 `""`와 null.
 - `coverage`는 유사 기업 응답의 `coverage`와 같은 모양이다(최근 365일).
