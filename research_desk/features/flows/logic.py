@@ -86,8 +86,9 @@ an answer cut short, would otherwise end the history early.
   start after the needed start without a known data start, send the stock back to the needed start.
   A day KIS never returns therefore makes every run ask the stock back to the needed start until
   that day leaves the range; what KIS gives is stored as it came.
-- ``raw_cutoff(day)`` = ``day`` − ``RAW_RETENTION_DAYS`` (470 calendar days): raw rows dated before it
-  are deleted. ``days_to_drop(days, keep=60)``: the ranked days beyond the latest ``keep``
+- ``raw_cutoff(anchor)`` = the run's anchor day (기준일, ``anchor_day``; the caller passes it) −
+  ``RAW_RETENTION_DAYS`` (470 calendar days): raw rows dated before it are deleted.
+  ``days_to_drop(days, keep=60)``: the ranked days beyond the latest ``keep``
   (``KEEP_RANKED_DAYS``), oldest first.
 
 Ranking day and market caps. The day to rank is the run's base trading day D, the latest trading day
@@ -168,7 +169,7 @@ MIN_DAYS = 60               # fewer days in the window: no rank
 REVIEW_DAYS = 60            # ranked days that can be looked at again
 CALENDAR_DAYS = WINDOW_DAYS + REVIEW_DAYS   # the retention range, trading days
 BLOCK_DAYS = 30             # trading days in one KIS answer
-RAW_RETENTION_DAYS = 470    # calendar days of raw rows kept before the base trading day
+RAW_RETENTION_DAYS = 470    # calendar days of raw rows kept before the run's anchor day
 KEEP_RANKED_DAYS = 60       # entries kept in the ranked-day list
 ANCHOR_CUTOFF = time(18, 0)  # from this time on a weekday, that day's flows are asked
 MAX_FAILED_PERCENT = 20     # more stocks than this percent failed: the run failed
@@ -340,9 +341,10 @@ def next_fill_anchor(calendar: Sequence[date], coverage: Optional[Mapping[str, A
     return earliest - timedelta(days=1)
 
 
-def raw_cutoff(day: Any) -> date:
-    """Raw rows dated before this day are deleted: ``day`` − ``RAW_RETENTION_DAYS``."""
-    return _as_date(day) - timedelta(days=RAW_RETENTION_DAYS)
+def raw_cutoff(anchor: Any) -> date:
+    """Raw rows dated before this day are deleted: the run's anchor day (the caller passes it) −
+    ``RAW_RETENTION_DAYS``."""
+    return _as_date(anchor) - timedelta(days=RAW_RETENTION_DAYS)
 
 
 def days_to_drop(days: Iterable[Any], keep: int = KEEP_RANKED_DAYS) -> list[date]:

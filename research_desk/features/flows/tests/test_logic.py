@@ -538,6 +538,8 @@ def test_no_trading_day_and_an_empty_calendar():
 # ── retention ────────────────────────────────────────────────────────────────
 
 def test_raw_rows_older_than_470_days_are_cut():
+    # counted from the run's anchor day (기준일)
+    assert list(inspect.signature(logic.raw_cutoff).parameters) == ["anchor"]
     assert logic.RAW_RETENTION_DAYS == 470
     assert logic.raw_cutoff(date(2026, 10, 9)) == date(2025, 6, 26)
     assert logic.raw_cutoff("2026-10-09") == date(2025, 6, 26)
