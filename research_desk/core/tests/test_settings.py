@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from research_desk.core import settings
+from research_desk.core import kis, settings
 # Imported by name on purpose: the switch must still apply (no function swap).
 from research_desk.core.settings import MissingSetting, NotReady, find_env_file, load_env
 
@@ -247,6 +247,43 @@ def test_web_values_need_no_ai_key_telegram_or_db_url(monkeypatch):
     assert settings.krx_csv_path() == Path("docs/stock_data/KRX_stocks_data.csv")
 
 
+# ── the KIS account (every feature that calls KIS reads the same one) ────────
+
+_KIS = ("KIS_APP_KEY", "KIS_APP_SECRET", "KIS_BASE_URL", "KIS_TOKEN_CACHE")
+_REAL_SERVICE = "https://openapi.koreainvestment.com:9443"
+
+
+def _kis_values():
+    return (settings.kis_app_key(), settings.kis_app_secret(), settings.kis_base_url(),
+            settings.kis_token_cache())
+
+
+def test_kis_values_come_from_the_environment(monkeypatch):
+    monkeypatch.setenv("KIS_APP_KEY", "PSfakeAppKey0123456789")
+    monkeypatch.setenv("KIS_APP_SECRET", "fakeAppSecret/0123456789+abc==")
+    monkeypatch.setenv("KIS_BASE_URL", "https://openapivts.koreainvestment.com:29443")
+    monkeypatch.setenv("KIS_TOKEN_CACHE", "C:/shared/state/kis_token.json")
+
+    assert _kis_values() == ("PSfakeAppKey0123456789", "fakeAppSecret/0123456789+abc==",
+                             "https://openapivts.koreainvestment.com:29443",
+                             "C:/shared/state/kis_token.json")
+
+
+def test_kis_value_defaults(monkeypatch):
+    for name in _KIS:
+        monkeypatch.delenv(name, raising=False)
+    assert _kis_values() == (None, None, _REAL_SERVICE, None)
+
+    for name in _KIS:  # an empty value counts as not set
+        monkeypatch.setenv(name, "")
+    assert _kis_values() == (None, None, _REAL_SERVICE, None)
+
+
+def test_the_default_kis_address_is_the_kis_clients_real_service():
+    """Written in both modules so that reading the settings never imports the KIS client."""
+    assert settings.DEFAULT_KIS_BASE_URL == kis.DEFAULT_BASE_URL == _REAL_SERVICE
+
+
 # ── NotReady ─────────────────────────────────────────────────────────────────
 
 def test_not_ready_carries_area_and_reason():
@@ -267,7 +304,8 @@ def test_not_ready_carries_area_and_reason():
 _ENV_READS = {"getenv", "load_dotenv", "load_env", "required", "optional", "get_int",
               "get_float", "get_bool", "model_name", "supabase_url", "supabase_service_key",
               "supabase_db_url", "storage_base_dir", "krx_csv_path", "openai_api_key",
-              "anthropic_api_key"}
+              "anthropic_api_key", "kis_app_key", "kis_app_secret", "kis_base_url",
+              "kis_token_cache"}
 
 
 def _import_time_nodes(tree: ast.Module):

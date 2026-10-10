@@ -1,7 +1,10 @@
 """Prices settings (spec §8): the KIS account and the KIS call pace.
 
 Read when called, never at import (callers run ``core.settings.load_env()`` first). The DB
-settings are the shared ones (``core.settings.supabase_url()`` / ``supabase_service_key()``).
+settings are the shared ones (``core.settings.supabase_url()`` / ``supabase_service_key()``), and
+so is the KIS account: every feature that calls KIS reads the same variables, through
+``core.settings.kis_app_key()`` / ``kis_app_secret()`` / ``kis_base_url()`` / ``kis_token_cache()``.
+Only the call pace is a prices setting.
 
 - ``KIS_APP_KEY`` / ``KIS_APP_SECRET``: the 실전 account's app key and secret. An empty value
   counts as unset. Both are needed (``prices update`` stops with exit code 4 without them).
@@ -20,9 +23,9 @@ from typing import Optional
 
 from research_desk.core import settings as core_settings
 
-# The same address as core.kis.DEFAULT_BASE_URL, written here so that reading the settings does
-# not import the KIS client (a test keeps the two equal).
-DEFAULT_KIS_BASE_URL = "https://openapi.koreainvestment.com:9443"
+# The real service address, the same as core.kis.DEFAULT_BASE_URL (reading the settings does not
+# import the KIS client; tests keep the two equal).
+DEFAULT_KIS_BASE_URL = core_settings.DEFAULT_KIS_BASE_URL
 DEFAULT_MAX_CALLS_PER_SEC = 10.0
 
 
@@ -40,15 +43,15 @@ class PricesSettings:
 
 
 def app_key() -> Optional[str]:
-    return core_settings.optional("KIS_APP_KEY") or None
+    return core_settings.kis_app_key()
 
 
 def app_secret() -> Optional[str]:
-    return core_settings.optional("KIS_APP_SECRET") or None
+    return core_settings.kis_app_secret()
 
 
 def base_url() -> str:
-    return core_settings.optional("KIS_BASE_URL") or DEFAULT_KIS_BASE_URL
+    return core_settings.kis_base_url()
 
 
 def max_calls_per_sec() -> float:
@@ -60,7 +63,7 @@ def max_calls_per_sec() -> float:
 
 
 def token_cache() -> Optional[str]:
-    return core_settings.optional("KIS_TOKEN_CACHE") or None
+    return core_settings.kis_token_cache()
 
 
 def load_settings() -> PricesSettings:
