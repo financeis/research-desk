@@ -75,7 +75,7 @@
 
 준비(모두 갖춘 뒤 시작한다):
 - 마이그레이션 008 적용, `python -m research_desk peers inspect`가 0으로 끝남(표가 보인다).
-- 로컬 MongoDB가 켜져 있고 `FS.A001_v2`(`DART_MONGO_*`)에 그 회계연도 사업보고서가 `parser_version` 0.2.0 이상으로 들어 있음 — 별도 저장소의 DART 수집 프로그램(dart-fss-text, 로컬 갈래 `local/text-db-v2`의 `poetry run python ingest_local.py --schema v2`)이 채운다. 2026-10-10 지금은 2024년 결산 939곳(로컬 원본으로 만든 임시분)만 있어 `--fiscal-year 2024`로 빌드했다(`docs/tracking/findings.md`).
+- 로컬 MongoDB가 켜져 있고 `FS.A001_v2`(`DART_MONGO_*`)에 그 회계연도 사업보고서가 `parser_version` 0.2.0 이상으로 들어 있음 — 별도 저장소의 DART 수집 프로그램(dart-fss-text, 로컬 갈래 `local/text-db-v2`의 `poetry run python ingest_local.py --schema v2`)이 채운다. 2026-10-10 지금은 2024년 결산 939곳(로컬 원본으로 만든 임시분, 2025-03-18까지 제출한 회사만)만 있어 `--fiscal-year 2024`로 빌드했다. 오픈다트가 열리면 2025년 결산분으로 다시 만든다.
 - `.env`: 프로필 모델과 재처리 모델의 키(기본 `claude-sonnet-5-5` → `ANTHROPIC_API_KEY`, `gpt-5.4` → `OPENAI_API_KEY`), 임베딩용 `OPENAI_API_KEY`.
 - 웹 패키지 설치(`requirements-workspace.txt`). 없으면 분류 진행 확인에서 `ModuleNotFoundError`로 1.
 - 종목표가 버전 정보와 맞음(아니면 4, 분류와 같은 안내).
@@ -85,7 +85,7 @@
 순서:
 1. 시험 실행: `python -m research_desk peers build --pilot --codes 080220,032580,005930`처럼 몇 곳(또는 `--limit 50`). 화면에는 나오지 않고, 대상 회사마다 회사·부문 유사도 상위 10 표와 요약 JSON이 찍힌다. 이웃 목록이 그럴듯한지, `failed`·`kept_previous`가 없는지 본다. 시험 실행의 프로필은 저장되어 다음 실행이 재사용한다(AI를 다시 부르지 않음).
    - 동의어는 `research_desk/features/peers/synonyms.yaml`에 더한다(AI를 다시 부르지 않고, 다음 공개 빌드가 반영한다). 프롬프트·응답 모양을 고치는 것은 코드 변경이고, 프로필 버전 기본값(`PEERS_PROFILE_VERSION`)을 함께 올려야 한다 — 다음 빌드가 모든 회사를 다시 추출한다.
-   - 프로필 모델(`LLM_MODEL_PEERS`)은 2026-10-10 시험 실행 뒤 사용자가 정한 `claude-sonnet-5-5`다(`docs/llm-models.md`). 다른 모델과 비교할 때는 모델마다 `.env`의 `PEERS_PROFILE_VERSION`을 다른 시험용 값(예: `peer-profile@1.2-try-gpt`)으로 두고 같은 회사로 시험 실행한다 — 같은 프로필 버전이면 모델을 바꿔도 저장된 프로필을 재사용해 새 모델이 불리지 않는다. 고른 뒤에는 시험용 값을 지우고 사용자와 정한 모델로 본 실행을 한다.
+   - 프로필 모델(`LLM_MODEL_PEERS`)은 2026-10-10 Haiku 시험 실행 뒤 사용자가 정한 `claude-sonnet-5-5`다(카드 품질이 유사도 전체를 정하므로 연 1회 비용을 더 쓰기로 했다). 다른 모델과 비교할 때는 모델마다 `.env`의 `PEERS_PROFILE_VERSION`을 다른 시험용 값(예: `peer-profile@1.2-try-gpt`)으로 두고 같은 회사로 시험 실행한다 — 같은 프로필 버전이면 모델을 바꿔도 저장된 프로필을 재사용해 새 모델이 불리지 않는다. 고른 뒤에는 시험용 값을 지우고 사용자와 정한 모델로 본 실행을 한다.
 2. 비용·시간 보고: 요약 JSON의 `tokens`(입력·출력·임베딩)와 `peers inspect`의 상태별 토큰 합계를 회사 수로 나눠, 전체 대상 회사 수만큼의 토큰·비용·시간을 어림해 사용자에게 보고하고 승인받는다.
 3. 전체 실행: `python -m research_desk peers build`. 회사 수와 모델에 따라 몇 시간이 걸릴 수 있다. 끝에 요약 JSON:
    - `"status": "done"`(0): 공개됨. 웹앱을 다시 켜지 않아도 다음 요청부터 쓴다.
@@ -97,7 +97,7 @@
 - 시험은 늘 `--pilot`으로 한다. `--codes`·`--limit`만 주고 `--pilot`을 빼면, 줄인 대상의 95%가 성공하는 순간 그 빌드가 공개(`done`)되어 화면이 바로 그것을 쓴다(기준 표시가 `FY… · n/n곳`으로 작게 보인다). 백분위표·용어표는 그 버전의 `ok` 프로필 전체로 계산되므로 결과가 틀리지는 않지만, 공개 빌드 보존 3개 중 하나를 차지한다.
 - 빌드는 한 번에 하나다. 다른 빌드가 6시간 안에 진행했으면 새 실행은 1로 끝난다. 프로세스가 죽어 `running`으로 남은 빌드는 6시간이 지나면 다음 실행이 `failed`로 정리한다.
 - 빌드는 Ctrl+C로 멈춘다. 작업 관리자 등으로 프로세스를 강제로 끄면 빌드 행이 `running`으로 남아 6시간 동안 새 실행이 1로 거절된다. 6시간을 기다릴 수 없으면 `peer_builds`의 그 행을 백업한 뒤 한 트랜잭션에서 `status = 'failed'`, `finished_at = now()`, 이유를 `message`에 적고 바뀐 행이 1인지 확인해 닫는다(2026-10-10에 한 번 했다, 백업 `backups/peers/`). 만든 프로필은 남아 다음 실행이 재사용한다.
-- 동시 호출 수는 `PEERS_MAX_CONCURRENT_LLM`(기본 2, 절대 규칙 1)이다. 2026-10-10 FY2024 빌드는 사용자 요청으로 그 실행에만 8로 돌렸다(`$env:PEERS_MAX_CONCURRENT_LLM='8'`). 그 전에 공급자 응답 헤더로 분당 한도를 확인했다: Sonnet 5.5 입력 500만·출력 100만 토큰, `gpt-5.4` 100만 토큰, 둘 다 5,000회. 쓰인 양은 한도의 15% 안팎이었고 429는 0번, 857곳을 약 15분에 마쳤다. 그달 LangSmith 기록 한도가 차 있어 토큰 추이 검증은 하지 못했다. 기본값은 그대로 2다.
+- 동시 호출 수는 `PEERS_MAX_CONCURRENT_LLM`(기본 2, 절대 규칙 1)이다. 2026-10-10 FY2024 빌드는 사용자 요청으로 그 실행에만 8로 돌렸다(`$env:PEERS_MAX_CONCURRENT_LLM='8'`). 그 전에 공급자 응답 헤더로 분당 한도를 확인했다: Sonnet 5.5 입력 500만·출력 100만 토큰, `gpt-5.4` 100만 토큰, 둘 다 5,000회. 쓰인 양은 한도의 15% 안팎이었고 429는 0번, 새로 추출한 857곳(나머지 76곳은 직전에 멈춘 빌드가 같은 모델로 만들어 둔 프로필을 재사용)을 약 15분에, 임베딩까지 약 18분에 마쳤다. 그달 LangSmith 기록 한도가 차 있어 토큰 추이 검증은 하지 못했다. 기본값은 그대로 2다.
 - 같은 회계연도·프로필 버전으로 빌드가 도는 동안, 다시 추출된 회사(보고서 정정, 파서 버전 변경)는 그 빌드가 끝날 때까지 지금 공개된 빌드의 화면에서 "이 종목은 유사 기업 자료가 없습니다."로 보일 수 있다.
 
 ## 운영 원칙 (위반 금지)
@@ -139,8 +139,7 @@ powershell -File scripts\run-batches.ps1 -Iterations N -BatchSize 10
 - Pydantic serializer warning (`LLMExtraction` 직렬화 시) — 기능 영향 없음.
 - Windows native crash `exit=-1073741569`(드물게 `-1073741784`) — 스크립트가 그 작업자의 행을 되돌리고 다시 시도해 자동 복구한다(데이터 손실 없음). 다만 한 배치가 3번 연속 나면 스크립트가 1로 멈춘다.
   - 2026-10-09 백필에서 `tag run` 937번 중 131번 났다. 처음 120여 배치에서는 없다가 그 뒤 몇 분에 한 번꼴이었고, 같은 행을 다시 돌리면 성공했다. 충돌 직후 배치에서 글자가 있는 PDF 1건이 `first_page_unreadable`로 저장된 일도 있었다.
-  - 원인 추정: 분류기가 PDF 두 개를 두 스레드에서 동시에 읽었다(PyMuPDF는 여러 스레드 동시 사용을 지원하지 않는다). 2026-10-10에 PDF 접근을 프로세스 안에서 줄 세웠다(`core.pdf` 잠금).
-  - 잠금 뒤 재측정: 2026-10-10 재분류 백필(첫 묶음의 앞부분)에서 44번 실행 중 0번 — 2026-10-09 백필의 937번 중 131번보다 크게 줄었다. 실행 수가 아직 적으니 남은 백필에서도 센다.
+  - PDF 접근을 프로세스 안에서 줄 세운(2026-10-10) 뒤 재측정: 2026-10-10 재분류 백필(첫 묶음의 앞부분)에서 44번 실행 중 0번 — 2026-10-09 백필의 937번 중 131번보다 크게 줄었다. 실행 수가 아직 적으니 남은 백필에서도 센다.
 - `tag run`·`tag escalate` 시작 때 LangGraph의 `LangChainPendingDeprecationWarning` — 기능 영향 없음.
 
 ### 6. 유사도 계산과 분류 백필을 겹쳐 돌리지 않는다
@@ -158,7 +157,7 @@ powershell -File scripts\run-batches.ps1 -Iterations N -BatchSize 10
 # 큐 분포 (Supabase)
 python -m research_desk tag inspect
 
-# LLM 호출 오류 기록 (LangSmith — 로그인 필요, 프로젝트 이름은 .env의 LANGSMITH_PROJECT, 운영은 telegram_report)
+# LLM 호출 오류 기록 (따로 설치한 LangSmith CLI — 가상 환경에는 없다. 로그인 필요, 프로젝트 이름은 .env의 LANGSMITH_PROJECT, 운영은 telegram_report)
 langsmith trace list --project telegram_report --error --last-n-minutes 30
 
 # 유사도 계산: 회계연도·프로필 버전·상태별 프로필 수와 토큰, 최근 빌드 10개(상태·대상·성공·실패·시각·메시지)
@@ -232,7 +231,7 @@ python -m research_desk peers inspect
 | `KIS_APP_KEY`, `KIS_APP_SECRET` | prices update | 필수(없으면 4) | 한국투자증권 Open API 실전 계정의 앱키·시크릿. 사용자의 masterdb 프로젝트와 같은 키다(위 운영 원칙 7) |
 | `KIS_BASE_URL` | prices update | `https://openapi.koreainvestment.com:9443` | KIS 실전 서비스 주소 |
 | `PRICES_MAX_CALLS_PER_SEC` | prices update | 10 | KIS 호출을 1초에 몇 번까지 시작할지(토큰 요청 포함). 0보다 큰 수가 아니면 파이썬 오류로 1 |
-| `KIS_TOKEN_CACHE` | prices update | 없음(토큰을 메모리에만 두고 실행마다 새로 받음) | KIS 접근 토큰 파일. masterdb와 같은 파일(`…\pykrx_investmentflow\data\state\kis_token.json`)을 가리키면 유효한 토큰을 같이 쓰고, 새로 받은 토큰도 그 파일에 쓴다. 토큰이 들어 있으므로 이 저장소 밖에 두고 커밋하지 않는다 |
+| `KIS_TOKEN_CACHE` | prices update | 없음(토큰을 메모리에만 두고 실행마다 새로 받음) | KIS 접근 토큰 파일. masterdb 저장소의 `data/state/kis_token.json`을 가리키면 유효한 토큰을 같이 쓰고, 새로 받은 토큰도 그 파일에 쓴다. 토큰이 들어 있으므로 이 저장소 밖에 두고 커밋하지 않는다 |
 | `LLM_MODEL_PEERS` / `LLM_MODEL_PEERS_ESCALATION` | peers build | `claude-sonnet-5-5` / `gpt-5.4` | 프로필 추출 모델 / 근거율 0.8 미만일 때 한 번 더 추출할 모델(위 모델 표). 옛 이름 `OPENAI_MODEL_PEERS*`도 읽음 |
 | `PEERS_EMBED_MODEL` | peers build | `text-embedding-3-large` | 임베딩 모델. 1536차원을 낼 수 있는 OpenAI 모델만. 웹 테마 검색은 이 값이 아니라 공개 빌드에 기록된 모델을 쓴다 |
 | `PEERS_PROFILE_VERSION` | peers build | `peer-profile@1.2` | 프로필의 키. 바꾸면 다음 빌드가 모든 회사를 새로 추출한다(AI 비용). 화면은 공개 빌드의 버전을 따른다 |

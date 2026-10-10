@@ -17,6 +17,6 @@
 
 ## 결과
 - 그림 행은 `auto`면 기업 화면에 바로 나오고, `medium`과 `page_image`로 나중에 골라 점검할 수 있다. 발행일을 보낸 시각으로 대신 채운 경우처럼 "대체 수단을 쓴 경우"로 같은 대접을 한다. 그래서 이 기능이 들어간 뒤로는 `medium` 비율이 오르는 것이 정상이다.
-- 쪽 그림이 AI 공급자(Anthropic/OpenAI, codex 경로면 Codex CLI를 거쳐 OpenAI)로, 추적을 켰으면 LangSmith로도 나간다(`docs/security.md`).
+- 쪽 그림이 AI 공급자(Anthropic/OpenAI, codex 경로면 Codex CLI를 거쳐 OpenAI)로, 추적을 켰으면 LangSmith로도 나간다. 그림에는 그 쪽에 보이는 모든 것(표지, 애널리스트 이름과 연락처 등)이 담긴다.
 - 분류 모델은 그림을 받는 모델이어야 한다. 그림 경로가 생기기 전에 못 읽음으로 간 행은 `tag requeue --unreadable`로 대기 줄에 되돌려 다시 분류한다(0020).
 - 그림 그리기도 PyMuPDF를 쓰므로, 같은 날 `core.pdf`의 PyMuPDF 호출을 프로세스 전체 잠금 하나로 줄 세웠다. 백필의 비정상 종료가 PDF 동시 읽기 때문이라는 추정에 대한 처방이고, 효과는 운영 적용 백필에서 확인한다.

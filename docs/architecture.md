@@ -16,7 +16,7 @@ reports (pending) ──(Postgres 직접 연결 SUPABASE_DB_URL, asyncpg 풀 최
 reports (auto / review_needed) ──(같은 직접 연결)──▶ tag requeue (조건에 맞는 행 고르기, AI 없음)
    tag requeue --apply ──▶ 백업 CSV backups/requeue/ ──(한 트랜잭션)──▶ reports (pending) ──▶ 다음 백필이 다시 분류
 윈도우 작업 스케줄러 (평일 장 마감 뒤) ──▶ scripts/run-prices.ps1 ──▶ prices update
-   prices update ──(HTTPS, 앱키·시크릿 → 실행마다 접근 토큰 한 번)──▶ KIS Open API (수정주가 일봉, 현재가)
+   prices update ──(HTTPS, 앱키·시크릿. 접근 토큰은 masterdb와 같이 쓰는 토큰 파일에서, 없으면 실행마다 한 번)──▶ KIS Open API (수정주가 일봉, 현재가)
    prices update ──(Supabase REST)──▶ stock_price_snapshot (종목당 한 행) / price_update_runs
 
 로컬 MongoDB FS.A001_v2 (별도 저장소의 DART 수집 프로그램이 채움) ──(pymongo, 읽기만)──▶ peers build (연 1회, 사람이 실행)
@@ -117,7 +117,7 @@ reports (auto / review_needed) ──(같은 직접 연결)──▶ tag requeue
 | Anthropic API | 모델 이름이 `claude-*` | `ANTHROPIC_API_KEY` |
 | OpenAI API | 그 밖의 모델 이름, 그리고 모든 임베딩(`peers build`, 웹 테마 검색) | `OPENAI_API_KEY`. 유사 기업 기능은 프로필 모델이 Claude여도 임베딩 때문에 이 키가 필요하다 |
 | Codex CLI | 모델 이름이 `codex:<모델>` | 로컬 `codex exec` (ChatGPT 로그인 한도, API 키 없음) |
-| 한국투자증권 KIS Open API | `core.kis` ← `prices update` | httpx(HTTPS), 실전 서버 `KIS_BASE_URL`. `KIS_APP_KEY`·`KIS_APP_SECRET` → 실행마다 접근 토큰 한 번. 수정주가 일봉(한 번에 100행)과 현재가. 초당 호출 수는 `PRICES_MAX_CALLS_PER_SEC` 이하 |
+| 한국투자증권 KIS Open API | `core.kis` ← `prices update` | httpx(HTTPS), 실전 서버 `KIS_BASE_URL`. `KIS_APP_KEY`·`KIS_APP_SECRET`. 접근 토큰은 `KIS_TOKEN_CACHE`가 가리키는 masterdb의 토큰 파일에서 먼저 읽고(유효하면 KIS에 묻지 않는다), 없을 때만 실행마다 한 번 받아 그 파일에 쓴다. 수정주가 일봉(한 번에 100행)과 현재가. 초당 호출 수는 `PRICES_MAX_CALLS_PER_SEC` 이하 |
 | 로컬 MongoDB `FS.A001_v2` | `core.mongo` ← `peers build` | pymongo, 읽기만. 사업보고서 섹션 하나 = 문서 하나이고 `parser_version` 0.2.0 이상인 문서만 읽는다. `DART_MONGO_URL`·`DART_MONGO_DB`·`DART_MONGO_COLLECTION` |
 | LangSmith | 선택 | `LANGSMITH_TRACING=true`면 LangGraph 실행과 LLM 호출 기록을 보냄(분류의 1쪽 그림 포함) |
 | Windows PowerShell 5.1 | `tag requeue --apply` | `Get-CimInstance Win32_Process`로 이 PC에서 백필·재처리·수집·웹앱이 도는지 확인(새 패키지 없음) |

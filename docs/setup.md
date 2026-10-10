@@ -179,7 +179,9 @@ with its version file: a test checks that they match, so the commit checks block
 without its version.
 
 Rows already sent to review because a stock was missing from the old list are not re-tagged by
-themselves: re-tag them with `tag escalate --since <ISO time>` or the review screen's retag.
+themselves: send them back to the queue with `tag requeue --krx-unmatched` (preview, then
+`--apply`, then the backfill); `tag escalate --since <ISO time>` or the review screen's retag also
+work.
 
 ## Research Desk (React workspace)
 

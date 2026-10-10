@@ -185,7 +185,7 @@ START -> extract_pdf -> llm_extract --oos_gate--+-> status_unreadable           
   4. 한 트랜잭션(`SupabaseSQL.transaction()`): 행을 id 순서로 잠그고(`REQUEUE_LOCK_SQL`, `FOR UPDATE`), 잠근 값이 백업 값과 같고 여전히 상태·조건을 만족하는 행만 남긴다. 백업 뒤 바뀐 행은 빠진다 — 백업이 덮어쓴 값을 그대로 담게 하려는 것이다. 1쪽 그림 가능 여부는 트랜잭션 전의 확인 값을 쓴다. 남은 행을 `domain.reports.pending_reset_shape()`(검토의 재분류와 같은 22열 모양)로 되돌리고(`REQUEUE_RESET_SQL`, 조건에 `tagging_status IN ('auto', 'review_needed')`도 있다), 되돌린 id가 남긴 id와 다르면 모두 취소하고 1이다.
   5. `requeued`는 실제로 되돌린 행 수다. 그사이 바뀐 행이 빠지면 `total`보다 작다. `backup_file`은 백업 파일의 절대 경로다.
 - 백업은 기록용이다. 백업에서 되돌리는 명령은 없다(사용자 결정).
-- 실행 확인의 사각지대: 관리자 권한으로 띄운 프로세스는 일반 권한에서 명령줄이 비어 보여(`CommandLine` null) 찾지 못한다. 백필·수집·웹앱은 문서대로 일반 터미널에서 띄운다.
+- 실행 확인의 사각지대: 관리자 권한으로 띄운 프로세스는 일반 권한에서 명령줄이 비어 보여(`CommandLine` null) 찾지 못한다. 백필은 `powershell -File scripts\run-batches.ps1 …`로, 수집·웹앱은 일반 터미널에서 띄운다(관리자 창에서 띄우지 않는다).
 - 같은 행이 실행마다 되돌려지는 고리를 막는 규칙: `--unreadable`은 지금 그림을 만들 수 없는 행을 고르지 않고, 분류 모델이 그림을 못 받으면 4로 멈춘다. `--publisher-filename-mismatch`는 의심 표시가 이미 붙은 행과 못 읽음·거부 행을 고르지 않는다(이런 행에는 의심 표시가 붙지 않는다).
 - 되돌린 행은 다시 분류될 때까지 웹 목록에서 빠진다. 가져가는 순서가 `downloaded_at` 오름차순이라 새로 수집한 리포트보다 먼저 다시 분류된다.
 
