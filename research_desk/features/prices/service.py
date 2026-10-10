@@ -1,16 +1,19 @@
-"""Prices service: the stored snapshots and run records other features read (spec §8, §12).
+"""Prices service: the stored snapshots, run records and adjusted-close history other features
+read (spec §8, §12).
 
 Readiness. The DB is prepared on first use and kept for the life of the process:
 ``core.settings.load_env()``, then SUPABASE_URL and SUPABASE_SERVICE_KEY →
 ``core.db.supabase_client``. Without them: ``NotReady("주가", "DB 접속 설정(SUPABASE_URL,
 SUPABASE_SERVICE_KEY)이 없습니다")``. A failed preparation is not remembered, so values added to
-``.env`` count on the next call. Creating the service reads nothing.
+``.env`` count on the next call. Creating the service reads nothing. Arguments are checked before
+the DB is prepared (one plain string instead of codes is a TypeError; a ``since`` that is not a
+day is a TypeError or ValueError), and no codes need no DB.
 
 Light imports only: ``core.db`` (supabase-py, and with it an HTTP library) is imported when the DB
 is prepared, never when this module is, because ``cli.py`` imports the prices window for every
 command.
 
-An empty snapshot table is not a readiness problem: ``snapshots`` answers ``{}`` and
+An empty table is not a readiness problem: ``snapshots`` and ``daily_closes`` answer ``{}`` and
 ``latest_run`` None.
 """
 from __future__ import annotations
@@ -98,6 +101,18 @@ class PricesService:
             "as_of": _day(success["as_of"]) if success is not None else None,
         }
 
+    def daily_closes(self, codes: Iterable[str], since: Any) -> dict[str, list[dict]]:
+        """``{code: [{"date", "close"}, …]}``: the stored adjusted closes from ``since`` (that day
+        included) on, oldest first, for the codes among ``codes`` that have any, in the order asked."""
+        wanted = logic.wanted_codes(codes)
+        first = logic.iso_day(since)
+        if not wanted:
+            return {}
+        found: dict[str, list[dict]] = {}
+        for row in store.read_history(self.client(), wanted, first):
+            found.setdefault(row["stock_code"], []).append(logic.close_view(row))
+        return {code: found[code] for code in wanted if code in found}
+
 
 # ── the process-wide service and the window functions ────────────────────────
 
@@ -122,3 +137,8 @@ def snapshots(codes: Iterable[str]) -> dict[str, dict]:
 def latest_run() -> Optional[dict]:
     """See the window (``research_desk.features.prices``)."""
     return get_service().latest_run()
+
+
+def daily_closes(codes: Iterable[str], since: Any) -> dict[str, list[dict]]:
+    """See the window (``research_desk.features.prices``)."""
+    return get_service().daily_closes(codes, since)

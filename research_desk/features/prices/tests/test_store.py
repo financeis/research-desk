@@ -1,14 +1,22 @@
-"""features.prices store: the two price tables over Supabase REST (the FakeSupabase stand-in).
+"""features.prices store: the three price tables over Supabase REST (the FakeSupabase stand-in).
 
 Checked: snapshot upserts in batches on stock_code, reads by code in chunks (each answer under
 the 1000-row limit), the full read of stored returns paged 1000 rows at a time with a new query
-per page, run records (insert as running, finish, the latest run, the latest successful run).
+per page, run records (insert as running, finish, the latest run, the latest successful run),
+and the history (``stock_price_daily``): upserts in batches on (stock_code, trade_date) with
+nothing sent back, the stored closes on given days read day by day in chunks of codes, the
+delete of the rows before a day, the read of codes' rows from a day on (chunks of codes, 1000
+rows a page with a new query per page, by stock code then day).
 """
 from __future__ import annotations
 
+from datetime import date, timedelta
+
+import pytest
+
 from research_desk.features.prices import store
 
-from .fakes import FakeSupabase
+from .fakes import FakeDBError, FakeSupabase
 
 
 def code(i: int) -> str:
@@ -136,3 +144,115 @@ def test_no_runs_give_none():
     db = FakeSupabase(runs=[{"run_id": 1, "status": "failed"}, {"run_id": 2, "status": "running"}])
     assert store.latest_run(FakeSupabase()) is None
     assert store.latest_successful_run(db) is None
+
+
+# ── the adjusted-close history ───────────────────────────────────────────────
+
+FIRST = date(2025, 9, 23)
+
+
+def day(i: int) -> str:
+    return (FIRST + timedelta(days=i)).isoformat()
+
+
+def close_row(i: int, n: int, close: int) -> dict:
+    return {"stock_code": code(i), "trade_date": day(n), "close": close}
+
+
+def test_the_history_table_and_its_key():
+    assert store.HISTORY_TABLE == "stock_price_daily"
+    assert store.HISTORY_KEY == "stock_code,trade_date"
+
+
+def test_history_rows_are_upserted_on_the_stock_and_day_500_a_request_with_nothing_sent_back():
+    db = FakeSupabase()
+    rows = [close_row(i // 300, i % 300, 1000 + i) for i in range(1200)]
+    store.upsert_history(db, iter(rows))   # any iterable, read lazily
+    upserts = db.queries(store.HISTORY_TABLE, "upsert")
+    assert [len(q.rows_sent) for q in upserts] == [500, 500, 200]
+    assert {q.on_conflict for q in upserts} == {"stock_code,trade_date"}
+    assert {q.returning for q in upserts} == {"minimal"}
+    assert db.history()[code(3)][day(299)] == 2199
+    assert sum(len(days) for days in db.history().values()) == 1200
+
+
+def test_an_upserted_day_replaces_the_stored_close_and_leaves_the_other_days():
+    db = FakeSupabase(daily=[close_row(1, 0, 100), close_row(1, 1, 101), close_row(2, 0, 7)])
+    store.upsert_history(db, [close_row(1, 1, 50), close_row(1, 2, 52)])
+    assert db.history() == {code(1): {day(0): 100, day(1): 50, day(2): 52}, code(2): {day(0): 7}}
+
+
+def test_no_history_rows_send_nothing():
+    db = FakeSupabase()
+    store.upsert_history(db, iter([]))
+    assert db.executed == []
+
+
+def test_a_history_close_must_be_whole_won():
+    db = FakeSupabase()
+    with pytest.raises(FakeDBError):
+        store.upsert_history(db, [close_row(1, 0, 100.5)])
+    assert db.history() == {}
+
+
+def test_the_stored_closes_on_given_days_are_read_day_by_day_200_codes_a_request():
+    db = FakeSupabase(daily=[close_row(i, 10, 5000 + i) for i in range(0, 450, 2)]
+                      + [close_row(0, 0, 400), close_row(1, 0, 401), close_row(2, 3, 9)])
+    found = store.read_history_on(db, {day(10): [code(i) for i in range(450)], day(0): [code(0), code(1), code(2)]})
+    assert found[code(4)] == {day(10): 5004}
+    assert found[code(0)] == {day(10): 5000, day(0): 400}
+    assert found[code(1)] == {day(0): 401}          # nothing on day 10
+    assert code(3) not in found and found[code(2)] == {day(10): 5002}   # day 3 was not asked
+    reads = db.queries(store.HISTORY_TABLE, "select")
+    assert [(q.filter_values("eq", "trade_date"), len(q.filter_values("in", "stock_code")[0])) for q in reads] == [
+        ([day(10)], 200), ([day(10)], 200), ([day(10)], 50), ([day(0)], 3)]
+    assert all(q.columns == ["stock_code", "trade_date", "close"] for q in reads)
+
+
+def test_reading_on_no_days_asks_nothing():
+    db = FakeSupabase()
+    assert store.read_history_on(db, {}) == {}
+    assert store.read_history_on(db, {day(0): []}) == {}
+    assert db.executed == []
+
+
+def test_the_history_before_a_day_is_deleted_in_one_request_with_nothing_sent_back():
+    db = FakeSupabase(daily=[close_row(1, 0, 100), close_row(1, 1, 101), close_row(2, 0, 7), close_row(2, 5, 8)])
+    store.delete_history_before(db, day(1))
+    [delete] = db.queries(store.HISTORY_TABLE, "delete")
+    assert delete.filters == [("lt", "trade_date", day(1))] and delete.returning == "minimal"
+    assert db.history() == {code(1): {day(1): 101}, code(2): {day(5): 8}}   # the day itself is kept
+
+
+def test_the_history_of_codes_from_a_day_is_read_1000_rows_a_page_with_a_new_query_for_each():
+    db = FakeSupabase(daily=[close_row(i, n, 1000 * i + n) for n in reversed(range(600)) for i in (2, 0, 1)])
+    rows = store.read_history(db, [code(2), code(0)], day(10))
+    assert [(row["stock_code"], row["trade_date"]) for row in rows] == (
+        [(code(0), day(n)) for n in range(10, 600)] + [(code(2), day(n)) for n in range(10, 600)])
+    assert rows[0] == {"stock_code": code(0), "trade_date": day(10), "close": 10}   # that day included
+    reads = db.queries(store.HISTORY_TABLE, "select")
+    assert [(q.offset, q.limit_n) for q in reads] == [(0, 1000), (1000, 1000)]   # 1180 rows
+    assert len({id(q) for q in reads}) == 2                                       # a new query for each page
+    assert all(q.orders == [("stock_code", False), ("trade_date", False)] for q in reads)
+    assert all(q.filter_values("gte", "trade_date") == [day(10)] for q in reads)
+    assert all(q.filter_values("in", "stock_code") == [[code(2), code(0)]] for q in reads)
+
+
+def test_a_full_last_history_page_is_followed_by_an_empty_one():
+    db = FakeSupabase(daily=[close_row(1, n, 5) for n in range(1000)])
+    assert len(store.read_history(db, [code(1)], day(0))) == 1000
+    assert len(db.queries(store.HISTORY_TABLE, "select")) == 2
+
+
+def test_the_history_is_read_200_codes_at_a_time():
+    db = FakeSupabase(daily=[close_row(i, 0, i) for i in range(450)])
+    rows = store.read_history(db, [code(i) for i in range(450)], day(0))
+    assert [row["stock_code"] for row in rows] == [code(i) for i in range(450)]
+    reads = db.queries(store.HISTORY_TABLE, "select")
+    assert [len(q.filter_values("in", "stock_code")[0]) for q in reads] == [200, 200, 50]
+
+
+def test_reading_the_history_of_no_codes_asks_nothing():
+    db = FakeSupabase(daily=[close_row(1, 0, 5)])
+    assert store.read_history(db, [], day(0)) == []
+    assert db.executed == []

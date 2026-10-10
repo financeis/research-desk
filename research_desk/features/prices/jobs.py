@@ -1,4 +1,5 @@
-"""``prices update [--codes 005930,080220]``: the daily KIS price snapshot (spec §8, §11).
+"""``prices update [--codes 005930,080220]``: the daily KIS price snapshot and the year of adjusted
+closes behind it (spec §8, §11).
 
 ``register(subparsers)`` adds ``prices`` and its subcommand ``update``; the window exports it as
 ``register_jobs`` for ``cli.py``. The command function returns the exit code.
@@ -19,27 +20,34 @@
      received, every stock counted as failed and the message ``KIS 접근 토큰을 받지 못했습니다
      (<reason>). …``, which also ends the summary line on stderr; exit 1;
   3. per stock, one after another, paced by the KIS client at PRICES_MAX_CALLS_PER_SEC: the
-     adjusted daily prices of the ``LOOKBACK_DAYS`` calendar days up to today (KST), then the
-     quote. A KIS error, a strange answer or no usable row is that stock's failure (one warning
-     line each). Once more than 20 % of the stocks have failed the run is failed whatever comes
-     next, so the rest are not asked;
+     adjusted daily prices of the ``LOOKBACK_DAYS`` (380) calendar days up to today (KST), three
+     KIS calls of 100 rows, then the quote. A KIS error, a strange answer or no usable row is that
+     stock's failure (one warning line each). Once more than 20 % of the stocks have failed the
+     run is failed whatever comes next, so the rest are not asked;
   4. the status (``logic.run_status``). ok / partial: the received stocks are upserted with the
      excess against this run's market medians, and the stocks not received keep their stored
-     values and get the ``no_data`` flag (a stock without a stored row gets none). failed: no
-     snapshot changes;
+     values and get the ``no_data`` flag (a stock without a stored row gets none). Then the
+     received stocks' adjusted closes go to the history (``stock_price_daily``): only the new
+     days, or the stock's whole series when its stored history is missing, shorter or differs
+     (``logic.history_rows``, decided from the snapshot as_of read before the upsert and the
+     stored closes on the probe days); the stocks not received keep theirs. Last, the history
+     before the window's first day is deleted, for every stock (also ones no longer in the
+     list). failed: no snapshot or history changes;
   5. the run record is closed with the status, as_of (the latest day received), the counts and a
      message;
   6. one summary line: stdout for ok / partial (exit 0), stderr for failed (exit 1).
   An exception on the way closes the run record as failed and goes up: Python prints it and the
   process ends with 1. Ctrl+C also closes the run record as failed and goes up, but the process
   then ends with the interpreter's interrupt code, not 1 (on Windows 0xC000013A, which
-  PowerShell shows as -1073741510).
+  PowerShell shows as -1073741510). What was written before stays (the snapshots are written
+  before the history); the next run finds no history row on a rewritten snapshot's day and writes
+  that stock's whole series again.
 - ``--codes`` is a check. The access token comes first: without it nothing is asked or read and
   nothing goes to stdout (one line on stderr, exit 1). Then only those codes are asked and their
   computed rows printed as JSON, then one summary line. Nothing is written (no snapshot, no run
-  record). Excess uses the market medians of every stored snapshot, blank when there is none. A
-  code not in the stock list is not asked. Exit 0 when every code was received, else 1 (summary
-  on stderr).
+  record, no history). Excess uses the market medians of every stored snapshot, blank when there
+  is none. A code not in the stock list is not asked. Exit 0 when every code was received, else 1
+  (summary on stderr).
 
 Heavy imports (the KIS client with its HTTP library, supabase-py) happen when the command runs:
 ``cli.py`` imports this module for every command. Output holds no key: KIS errors are masked by
@@ -68,9 +76,11 @@ from . import settings as prices_settings
 logger = logging.getLogger(__name__)
 
 EXIT_NOT_READY = 4
-# Calendar days of daily prices asked: 127 trading days (the 6-month return) with room for
-# holidays and halts, still within two KIS pages of 100 rows.
-LOOKBACK_DAYS = 240
+# Calendar days of daily prices asked, and of the adjusted-close history kept (adjustable): a year
+# of history, more than 250 trading days (and the 6-month return's 127) with room for holidays
+# and halts; three KIS pages of 100 rows a stock. The history and the window are the same span, so
+# a stock's whole series covers every stored day.
+LOOKBACK_DAYS = 380
 KST = timezone(timedelta(hours=9), "KST")   # Korea keeps no daylight saving time
 SOURCE = "KIS"
 
@@ -194,16 +204,18 @@ def _token_problem(kis: Any) -> Optional[str]:
     return None
 
 
-def _fetch(kis: Any, entry: StockEntry, start: date, end: date) -> tuple[Optional[dict], Optional[str]]:
-    """``(snapshot row, None)`` for a received stock, ``(None, reason)`` for one not received."""
+def _fetch(kis: Any, entry: StockEntry, start: date,
+           end: date) -> tuple[Optional[dict], list[tuple[date, int]], Optional[str]]:
+    """``(snapshot row, adjusted closes, None)`` for a received stock, ``(None, [], reason)`` for
+    one not received. The closes (``logic.close_series``) are the series the row is computed from."""
     try:
-        daily = kis.daily_prices(entry.code, start, end)
-        if not logic.usable_rows(daily):
-            return None, NO_PRICES
+        daily = logic.usable_rows(kis.daily_prices(entry.code, start, end))
+        if not daily:
+            return None, [], NO_PRICES
         quote = kis.quote(entry.code)
     except Exception as exc:   # a KIS error or a strange answer fails this stock only
-        return None, _reason(exc)
-    return logic.snapshot_row(entry.code, entry.market, daily, quote), None
+        return None, [], _reason(exc)
+    return logic.snapshot_row(entry.code, entry.market, daily, quote), logic.close_series(daily), None
 
 
 def _reason(exc: BaseException) -> str:
@@ -222,11 +234,11 @@ def _run(sb: Any, kis: Any, entries: Sequence[StockEntry], window: tuple[date, d
             received, status, as_of = [], logic.FAILED, None
             outcome = message = RUN_WITHOUT_TOKEN.format(reason=problem)
         else:
-            received, failures, skipped = _collect(kis, entries, window)
+            received, closes, failures, skipped = _collect(kis, entries, window)
             status = logic.run_status(total, total - len(received))
             as_of = max((row["as_of"] for row in received), default=None)
             if status != logic.FAILED:
-                _save(sb, received, list(failures))
+                _save(sb, received, closes, list(failures), keep_from=window[0])
             outcome, message = _outcome(status, skipped), _run_message(status, failures, skipped)
         failed = total - len(received)
         store.finish_run(sb, run_id, status=status, finished_at=utc_now().isoformat(), as_of=as_of,
@@ -242,34 +254,56 @@ def _run(sb: Any, kis: Any, entries: Sequence[StockEntry], window: tuple[date, d
     return 0 if status in logic.SUCCESS_STATUSES else 1
 
 
-def _collect(kis: Any, entries: Sequence[StockEntry],
-             window: tuple[date, date]) -> tuple[list[dict], dict[str, str], int]:
-    """Ask KIS stock by stock: ``(received rows, {code: reason} not received, codes not asked)``."""
+def _collect(kis: Any, entries: Sequence[StockEntry], window: tuple[date, date]
+             ) -> tuple[list[dict], dict[str, list[tuple[date, int]]], dict[str, str], int]:
+    """Ask KIS stock by stock: ``(received rows, {code: adjusted closes} of the received stocks,
+    {code: reason} not received, codes not asked)``. The closes are kept until the run's status
+    is known (about 260 days a stock)."""
     start, end = window
     received: list[dict] = []
+    closes: dict[str, list[tuple[date, int]]] = {}
     failures: dict[str, str] = {}
     for i, entry in enumerate(entries):
-        row, reason = _fetch(kis, entry, start, end)
+        row, series, reason = _fetch(kis, entry, start, end)
         if row is not None:
             received.append(row)
+            closes[entry.code] = series
             continue
         failures[entry.code] = reason
         logger.warning("주가를 받지 못했습니다: %s (%s)", entry.code, reason)
         if logic.run_status(len(entries), len(failures)) == logic.FAILED:
-            return received, failures, len(entries) - i - 1   # failed whatever comes next
-    return received, failures, 0
+            return received, closes, failures, len(entries) - i - 1   # failed whatever comes next
+    return received, closes, failures, 0
 
 
-def _save(sb: Any, received: list[dict], not_received: list[str]) -> None:
-    """Upsert the received stocks with this run's excess; flag the stored rows of the others."""
+def _save(sb: Any, received: list[dict], closes: dict[str, list[tuple[date, int]]], not_received: list[str],
+          *, keep_from: date) -> None:
+    """Upsert the received stocks with this run's excess and flag the stored rows of the others;
+    then write the received stocks' adjusted closes to the history and delete the history before
+    ``keep_from`` (the window's first day).
+
+    How each stock's history is written is decided from what was stored before this run: its
+    snapshot's as_of (read before the snapshots are replaced) and its stored closes on the probe
+    days (``logic.history_probes``), read day by day."""
+    before = store.read_snapshots(sb, list(closes), columns=("stock_code", "as_of"))
+    previous = {code: (before.get(code) or {}).get("as_of") for code in closes}
+    probe_days: dict[str, list[str]] = {}
+    for code, series in closes.items():
+        for day in logic.history_probes(series, previous[code]):
+            probe_days.setdefault(day, []).append(code)
+    stored = store.read_history_on(sb, probe_days)
+
     medians = logic.market_medians(received)
     written_at = utc_now().isoformat()
     store.upsert_snapshots(sb, [logic.with_excess(row, medians) | {"source": SOURCE, "updated_at": written_at}
                                 for row in received])
     if not_received:
-        stored = store.read_snapshots(sb, not_received, columns=("stock_code", "flags"))
-        store.upsert_snapshots(sb, [{"stock_code": code, "flags": logic.with_no_data(stored[code].get("flags"))}
-                                    for code in not_received if code in stored])
+        flags = store.read_snapshots(sb, not_received, columns=("stock_code", "flags"))
+        store.upsert_snapshots(sb, [{"stock_code": code, "flags": logic.with_no_data(flags[code].get("flags"))}
+                                    for code in not_received if code in flags])
+    store.upsert_history(sb, (row for code, series in closes.items()
+                              for row in logic.history_rows(code, series, previous[code], stored.get(code, {}))))
+    store.delete_history_before(sb, keep_from.isoformat())
 
 
 def _outcome(status: str, skipped: int) -> Optional[str]:
@@ -318,7 +352,7 @@ def _check(sb: Any, kis: Any, stocks: StockList, codes: Sequence[str], window: t
     results: dict[str, dict] = {}
     for code in codes:
         entry = stocks.lookup(code)
-        row, reason = (None, NOT_LISTED) if entry is None else _fetch(kis, entry, start, end)
+        row, _, reason = (None, [], NOT_LISTED) if entry is None else _fetch(kis, entry, start, end)
         results[code] = (logic.with_excess(row, medians) if row is not None
                          else {"stock_code": code, "flags": [logic.NO_DATA], "error": reason})
     print(json.dumps(results, ensure_ascii=False, indent=2))
