@@ -9,11 +9,12 @@
   - `compare`: 같은 기업의 두 보고서 비교
   - `coverage`: 리서치 커버리지 집계, 종목별 증권사 리포트 수
   - `review`: `review_needed` 행의 수동 검토
-  - `prices`: 매일 주가 스냅샷 명령(`prices update`)과 주가 창구. 웹 주소는 없다
+  - `prices`: 매일 주가 스냅샷 명령(`prices update`), 1년치 수정 종가 이력과 주가 창구. 웹 주소는 없다
   - `peers`: 연 1회 유사도 계산 명령(`peers build`·`peers inspect`)과 유사 기업·테마 검색 주소
+  - `flows`: 매일 수급 갱신 명령(`flows update`)과 수급 랭킹·기업 수급 주소, 수급 창구
   - `freshness`: 모든 화면 맨 위 상태 줄의 주소(`/api/freshness`). 자기 표·설정이 없다
-- 표 주인 몫. `reports` 표에서 분류가 끝난 행 읽기는 `features/reports`가, 검토 대기열 조회·검토 결과 쓰기·되돌리기는 `features/review`가 맡는다. `report_summaries`는 `features/analysis`가 주인이고, 두 보고서 비교 결과 저장도 analysis 창구(`save_comparison`)를 거친다. 주가 표 두 개(`stock_price_snapshot`, `price_update_runs`)는 `features/prices`, 유사 기업 표 다섯 개(`company_profiles`, `company_segments`, `company_embeddings`, `segment_embeddings`, `peer_builds`)와 DB 함수 두 개는 `features/peers`가 주인이다.
-- 앞으로 붙일 기능(수급 분석, 퀀트 연결 등)도 여기에 폴더 하나로 붙인다.
+- 표 주인 몫. `reports` 표에서 분류가 끝난 행 읽기는 `features/reports`가, 검토 대기열 조회·검토 결과 쓰기·되돌리기는 `features/review`가 맡는다. `report_summaries`는 `features/analysis`가 주인이고, 두 보고서 비교 결과 저장도 analysis 창구(`save_comparison`)를 거친다. 주가 표 세 개(`stock_price_snapshot`, `price_update_runs`, `stock_price_daily`)는 `features/prices`, 유사 기업 표 다섯 개(`company_profiles`, `company_segments`, `company_embeddings`, `segment_embeddings`, `peer_builds`)와 DB 함수 두 개는 `features/peers`, 수급 표 네 개(`investor_flow_daily`, `investor_flow_runs`, `investor_flow_days`, `investor_flow_stocks`)와 DB 함수 두 개(`rank_investor_flows`, `investor_flow_coverage`)는 `features/flows`가 주인이다.
+- 앞으로 붙일 기능(퀀트 연결 등)도 여기에 폴더 하나로 붙인다.
 
 ## 맡지 않는 일
 
@@ -29,12 +30,12 @@
 
 - 다른 기능은 공개 창구로만 쓴다: `from research_desk.features import reports` 또는 `from research_desk.features.reports import get_report`. 하위 모듈을 직접 import하면(`research_desk.features.reports.store`, 상대 import `..reports.store`도 같다) `R5 기능` 위반이다. 함수 안이나 `TYPE_CHECKING` 안의 import도 검사한다. `importlib` 같은 동적 import로 검사를 피하지 않는다.
 - 공개 이름은 그 기능 `__init__.py`의 최상위(최상위 `if`·`try` 안 포함)가 직접 묶은 이름뿐이다: `import`, `from … import`, 값이 있는 대입, `def`, `class`. `import *`, `__all__` 목록, 하위 모듈 import의 부수효과로 생긴 이름(`from .store import f` 뒤의 `store`)은 공개가 아니다. 하위 모듈 자체를 내놓으려면 `from . import store`처럼 직접 묶는다.
-- 기능 사이 의존은 순환하지 않는다(`R6 순환 금지`). 의존 방향은 `reports → analysis`, `compare → reports, analysis`, `coverage → reports`, `review → coverage`, `peers → coverage, prices, reports`, `freshness → prices, reports`이고, `companies`·`analysis`·`prices`는 다른 기능에 의존하지 않는다. 함수 안의 import도 의존으로 센다(`peers`는 `reports`를 명령 함수 안에서만 import하지만 그것도 간선이다). 새 의존을 더해도 이 그래프에 고리가 생기면 안 된다. 테스트 안의 역방향 import는 세지 않는다.
+- 기능 사이 의존은 순환하지 않는다(`R6 순환 금지`). 의존 방향은 `reports → analysis`, `compare → reports, analysis`, `coverage → reports`, `review → coverage`, `peers → coverage, prices, reports`, `flows → prices, coverage`, `freshness → prices, flows, reports`이고, `companies`·`analysis`·`prices`는 다른 기능에 의존하지 않는다. 함수 안의 import도 의존으로 센다(`peers`는 `reports`를, `flows`는 `prices`·`coverage`를 함수 안에서만 import하지만 그것도 간선이다). 새 의존을 더해도 이 그래프에 고리가 생기면 안 된다. 테스트 안의 역방향 import는 세지 않는다.
   - 고리가 생길 상황이면 아래쪽 기능이 위쪽을 부르게 하지 말고, 위쪽이 읽은 값을 인자로 넘기거나 함께 쓰는 것을 의존받는 쪽 기능(DB를 모르는 기준이면 `domain`)으로 내린다. `analysis`가 리포트 행을 직접 읽지 않고 `reports`가 읽은 행을 `analyze_report(row)`로 받는 것이 그 예다. 그래서 분석 실행 주소(`POST /api/reports/{rid}/analyze`)도 `reports`에 있다.
   - 기능 사이 연결을 `web`에 두지 않는다. 검토 뒤 커버리지 캐시 비우기는 `review`가 `coverage.invalidate()`를 직접 부른다.
 - 다른 기능의 함수는 부르는 순간 창구 모듈의 속성으로 찾는다: `from research_desk.features import coverage`로 들고 있다가 `coverage.invalidate()`. `from research_desk.features.coverage import invalidate`로 미리 묶어 두면 테스트가 창구 속성을 바꿔 끼워도 닿지 않아, 가짜 대신 진짜 DB 연결을 만들려다 실패한다.
 - 준비 실패는 `core.settings.NotReady(<기능 이름>, <이유>)` 하나로만 알린다. `web`이 이것을 그 기능 주소의 503 `{"detail": "<기능 이름> 기능을 지금 쓸 수 없습니다: <이유>"}`로 바꾼다.
-  - 기능 이름: `기업 목록`(companies), `리포트`(reports), `분석`(analysis), `비교`(compare), `커버리지`(coverage), `검토`(review), `주가`(prices), `유사 기업`(peers), `자료 기준일`(freshness). 새 기능은 겹치지 않는 한국어 이름 하나를 정해 `AREA` 상수로 둔다.
+  - 기능 이름: `기업 목록`(companies), `리포트`(reports), `분석`(analysis), `비교`(compare), `커버리지`(coverage), `검토`(review), `주가`(prices), `유사 기업`(peers), `수급`(flows), `자료 기준일`(freshness). 새 기능은 겹치지 않는 한국어 이름 하나를 정해 `AREA` 상수로 둔다.
   - 이유는 한국어 고정 문장이다. 변수 이름은 넣어도 되지만 파일 경로·키 값·트레이스백은 넣지 않는다. 이미 쓰는 문장: `DB 접속 설정(SUPABASE_URL, SUPABASE_SERVICE_KEY)이 없습니다`, `종목표 파일을 읽을 수 없습니다`. 같은 원인에는 같은 문장을 쓴다.
   - `StockListError` 문장에는 파일 경로가 들어 있어 이유로 쓰지 않는다. 원인은 `logger.warning`으로 로컬 로그에만 남긴다.
   - 다른 기능의 창구에서 올라온 `NotReady`는 잡아서 바꾸지 않고 그대로 올려 보낸다. 화면에는 실패한 기능의 이름이 보여야 한다(커버리지 화면의 `리포트 기능을 지금 쓸 수 없습니다: …`).
@@ -66,7 +67,7 @@
 - 준비는 서비스 메서드가 처음 필요로 할 때 한다(`store()`, `stock_list()` 등): `settings.load_env()` → 설정 확인 → 연결 또는 파일 읽기. 성공하면 그 결과를 프로세스가 끝날 때까지 들고 있고, 실패하면 아무것도 남기지 않아 다음 요청에서 다시 준비한다. 잠금 안에서 한 번 더 확인해 동시에 두 번 준비하지 않는다.
   - 그래서 빠진 파일을 채우거나 `.env`에 빠진 값을 더하면 재시작 없이 다음 요청에 반영된다. `.env`에 이미 있던 값을 바꾼 것(`load_env()`는 덮어쓰지 않는다)과, 한 번 읽은 종목표 파일을 바꾼 것은 웹앱을 다시 켜야 반영된다.
 - DB가 필요 없는 확인(요청 값, 미리보기 쪽 범위, 되돌리기 토큰 등)은 준비보다 먼저 한다. 그래야 설정이 없어도 그 답(422·404·409)이 제대로 나간다.
-- 준비 조건. DB 접속 설정(`SUPABASE_URL`, `SUPABASE_SERVICE_KEY`)은 reports·review·analysis·prices·peers가 확인한다. compare·coverage·freshness는 직접 확인하지 않고, 거쳐 가는 창구(coverage는 reports, compare는 reports·analysis, freshness는 prices·reports)가 낸 결과를 그대로 받는다. 종목표 파일은 companies·reports(기업 정보)·coverage(시장 집계)·peers가 확인한다. 분석 모델의 키 또는 codex CLI는 analysis가 실제 AI 호출 직전에만 확인한다. peers는 요청마다 공개된 유사도 계산 결과가 있는지 보고(없으면 그 요청만 `NotReady`, 기억하지 않음), 테마 검색만 질의 임베딩 직전에 `OPENAI_API_KEY`를 확인한다.
+- 준비 조건. DB 접속 설정(`SUPABASE_URL`, `SUPABASE_SERVICE_KEY`)은 reports·review·analysis·prices·peers·flows가 확인한다. compare·coverage·freshness는 직접 확인하지 않고, 거쳐 가는 창구(coverage는 reports, compare는 reports·analysis, freshness는 prices·flows·reports)가 낸 결과를 그대로 받는다. 종목표 파일은 companies·reports(기업 정보)·coverage(시장 집계)·peers·flows가 확인한다. 분석 모델의 키 또는 codex CLI는 analysis가 실제 AI 호출 직전에만 확인한다. peers는 요청마다 공개된 유사도 계산 결과가 있는지 보고(없으면 그 요청만 `NotReady`, 기억하지 않음), 테마 검색만 질의 임베딩 직전에 `OPENAI_API_KEY`를 확인한다. flows는 순위표 요청마다 순위를 매긴 날이 있는지 본다(없으면 그 요청만 `NotReady`, 기억하지 않음).
 - 종목표가 필요한 기능은 `domain.stocks.StockList.load(settings.krx_csv_path())`로 직접 읽어 자기 이름으로 `NotReady`를 낸다. 지문이 버전 정보와 다르거나 버전 정보가 없으면 경고 로그만 남기고 그대로 동작한다. 웹은 종목표를 목록·이름 표시에만 쓰고 버전 값을 저장하지 않기 때문이다.
 - 웹 서버 안의 AI 호출은 `analysis.ai_slot()` 안에서 한다(분석·비교를 합쳐 서버 전체 동시 2개). 클라이언트·모델·호출 시간 한도는 `analysis.phase2_llm()`에서 받는다. 이 함수가 `.env`를 다시 읽고, 키가 없으면 `NotReady("분석", …)`를 낸다. 기능이 따로 세마포어를 만들거나 분석 설정(`LLM_MODEL_PHASE2`, `PHASE2_*`)을 직접 읽지 않는다.
   - 예외는 하나뿐이다: peers의 테마 검색 질의 임베딩은 `ai_slot()` 밖에서 peers 자체 자리(동시 2개, 15초)로 하고, 모델은 공개 빌드의 임베딩 모델이다. 1초 안팎의 호출이 몇 분짜리 분석 뒤에 줄 서지 않게 하려는 것이고, 분석 모델로는 임베딩을 만들 수 없다. 다른 새 웹 AI 호출을 이 예외에 넣지 않는다.
@@ -76,15 +77,16 @@
 
 **새 기능 붙이기.**
 1. `research_desk/features/<이름>/`에 필요한 파일만 만들고 `__init__.py`에 공개 이름을 묶는다. 명령이 없고 주소가 있으면 `from .router import router`.
-2. 주소가 있으면 `research_desk/web/app.py`의 기능 import 줄(`from research_desk.features import …`)과 `FEATURES` 목록 끝에 창구 이름을 더한다. 주소 없는 기능(analysis, prices)은 넣지 않는다. `create_app()`은 목록마다 `feature_router(feature)`로 라우터를 받는다: 창구에 `web_router`가 있으면 그것을 부르고, 없으면 `feature.router`를 쓴다.
+2. 주소가 있으면 `research_desk/web/app.py`의 기능 import 줄(`from research_desk.features import …`)과 `FEATURES` 목록 끝에 창구 이름을 더한다. 주소 없는 기능(analysis, prices)은 넣지 않는다. 명령과 주소가 둘 다 있는 기능은 peers와 flows다. `create_app()`은 목록마다 `feature_router(feature)`로 라우터를 받는다: 창구에 `web_router`가 있으면 그것을 부르고, 없으면 `feature.router`를 쓴다.
 3. 백그라운드 작업 명령이 있으면 `jobs.py`에 `register(subparsers)`를 두고, 창구에서 `from .jobs import register as register_jobs`로 묶는다. `research_desk/cli.py`에는 창구 import 한 줄과 `build_parser()` 안의 등록 한 줄을 더한다(`cli.py`도 기능은 창구로만 쓴다, `R8 입구`).
    - 창구 모양. `cli.py`는 어느 명령이든(명령 없이, `--help`만 해도) 이 창구를 import한다. 그래서 명령이 있는 기능의 창구는 FastAPI를 불러오지 않는 이름만 묶는다(`register_jobs`와 다른 기능이 쓸 함수 — 그 함수의 모듈도 최상위에서 FastAPI·`HTTPException`을 import하지 않는다). 웹 주소도 있으면 `router`를 묶지 말고 함수 `web_router()`를 둔다. 이 함수가 불릴 때 안에서 `from .router import router`를 하고 돌려준다. `jobs.py` 최상위에는 `core.settings` 정도만 두고, DB·MongoDB·AI 클라이언트와 다른 기능 창구는 명령 함수 안에서 import한다.
-   - 확인: `research_desk/tests/test_cli.py`가 명령 없는 실행에서 `fastapi`·`uvicorn`·`research_desk.web.app`·`langgraph`·`pymongo`·`research_desk.features.peers.router`·`.service`가 올라오지 않는지 본다. 새 명령이 무거운 패키지를 끌어오면 그 목록에 더한다. 이 검사를 지우거나 느슨하게 하지 않는다. 기능 안에도 창구 import가 무거운 것을 부르지 않는지 보는 테스트를 둔다(peers의 `tests/test_window.py`처럼).
+   - 확인: `research_desk/tests/test_cli.py`가 명령 없는 실행에서 `fastapi`·`uvicorn`·`research_desk.web.app`·`langgraph`·`pymongo`·`research_desk.features.peers.router`·`.service`·`research_desk.features.flows.router`가 올라오지 않는지 본다. 새 명령이 무거운 패키지를 끌어오면 그 목록에 더한다. 이 검사를 지우거나 느슨하게 하지 않는다. 기능 안에도 창구 import가 무거운 것을 부르지 않는지 보는 테스트를 둔다(peers·flows의 `tests/test_window.py`처럼).
+   - 다른 기능의 창구가 라우터를 묶고 있으면(coverage처럼) 그 창구도 FastAPI를 불러온다. 명령이 있는 기능이 그런 창구를 쓰려면 함수 안에서 import한다(flows가 리포트 수를 coverage에서 받을 때 그렇게 한다).
    - `web_router()`를 한 번 부르면 `research_desk.features.<기능>.router`는 하위 모듈이 된다. 그 기능의 라우터는 `web_router()`로만 받는다.
    - 명령이 실행 중에 FastAPI를 부르는 창구(예: reports)를 쓰면 그 명령은 웹 패키지(`requirements-workspace.txt`)가 있어야 돈다. `peers build`가 그렇다.
    - 명령은 시작할 때 `settings.load_env()`를 부른다. 준비 문제(키·설정·파일 없음)는 아무 일도 하기 전에 이유 한 줄을 stderr에 내고 종료 코드 4로 끝난다. 4는 다시 돌려도 저절로 풀리지 않는 상태라는 뜻이다(기다리면 풀리는 상태는 1). 정상은 0, 인자 오류는 argparse의 2, `--help`는 0이다.
-   - 정해진 시간 실행은 윈도우 작업 스케줄러가 `scripts/`의 `.ps1`을 부르고, 그 스크립트가 저장소 폴더로 옮겨 `python -m research_desk <명령>`을 실행하는 방식이다(`scripts/run-prices.ps1`). 한국어가 든 `.ps1`은 UTF-8(BOM 포함)로 저장한다. Windows PowerShell 5.1은 BOM 없는 스크립트를 시스템 코드 페이지(949)로 읽어 한국어가 깨진다.
-4. 새 표를 만들면 `migrations/`에 SQL을 더하고, 그 표와 주인 칸을 `research_desk/tests/architecture_rules.py`의 `TABLE_OWNERS`에 등록한다. 등록하지 않은 표는 구조 검사가 지키지 못한다. 여러 기능이 같이 쓰는 데이터는 기능 하나가 주인이 되고, 나머지는 그 창구로 읽는다(주가는 prices가 주인이다).
+   - 정해진 시간 실행은 윈도우 작업 스케줄러가 `scripts/`의 `.ps1`을 부르고, 그 스크립트가 저장소 폴더로 옮겨 `python -m research_desk <명령>`을 실행하는 방식이다(`scripts/run-prices.ps1`은 `prices update` 뒤 0일 때만 `flows update`를 잇는다). 한국어가 든 `.ps1`은 UTF-8(BOM 포함)로 저장한다. Windows PowerShell 5.1은 BOM 없는 스크립트를 시스템 코드 페이지(949)로 읽어 한국어가 깨진다.
+4. 새 표를 만들면 `migrations/`에 SQL을 더하고, 그 표와 주인 칸을 `research_desk/tests/architecture_rules.py`의 `TABLE_OWNERS`에 등록한다. 등록하지 않은 표는 구조 검사가 지키지 못한다. 여러 기능이 같이 쓰는 데이터는 기능 하나가 주인이 되고, 나머지는 그 창구로 읽는다(주가는 prices가 주인이라, 수급 탭의 주가선도 `prices.daily_closes()`로 읽는다). DB 함수를 만들면 구조 검사가 `.rpc(…)`를 보지 않으므로 주인 기능만 부르는지 리뷰에서 지킨다.
 5. 테스트를 더한다(아래).
 
 ## 테스트

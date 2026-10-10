@@ -3,7 +3,7 @@
 ## 맡는 일
 
 - `create_app(dist=None)`(`app.py`): FastAPI 앱 하나에 공통 장치, 오류 응답, `/api/health`, 기능 라우터(`FEATURES` 순서), 화면 파일을 붙인다.
-- `FEATURES`: 기능 등록 목록. 웹 주소가 있는 기능은 여기 이름 하나로 앱에 연결된다. 지금 순서는 `companies, reports, compare, coverage, review, peers, freshness`다.
+- `FEATURES`: 기능 등록 목록. 웹 주소가 있는 기능은 여기 이름 하나로 앱에 연결된다. 지금 순서는 `companies, reports, compare, coverage, review, peers, freshness, flows`다.
 - `feature_router(feature)`: 기능 창구에서 라우터를 받는 한 가지 방법. 창구에 `web_router`가 있으면 그것을 불러 받고, 없으면 `feature.router`를 쓴다.
 - `web` 명령(`server.py`): `python -m research_desk web [--view reports|market|review]`.
 - 직접 맡는 주소: `GET /api/health`, `GET /`, `/assets/*`, `GET /openapi.json`.
@@ -31,7 +31,7 @@
   - 기능이 낸 `HTTPException`(404·409·422)은 FastAPI 기본 처리 그대로 `{"detail": …}`다.
 - `GET /api/health` → `{"status": "ok"}`. 아무것도 확인하지 않는다. DB나 종목표 확인을 넣으면 "어떤 기능이 고장 나도 늘 200"이 깨진다.
 - `FEATURES`에는 웹 주소가 있는 기능의 창구만 넣고, 목록 순서대로 `include_router(feature_router(feature))`한다. 주소가 없는 `analysis`·`prices`는 넣지 않는다. 목록 순서가 곧 주소 등록 순서이고 테스트가 고정하므로, 새 기능은 끝에 더한다. 앱의 주소 표(메서드·경로)는 정해진 목록과 정확히 같아야 하고, 같은 주소가 두 번 붙으면 안 된다.
-- `feature_router`는 `web_router`를 먼저 본다. 명령이 있는 기능(peers)은 창구가 FastAPI를 불러오지 않도록 라우터를 묶지 않고 `web_router()`로 넘긴다. 그런데 `web_router()`를 한 번 부르면 `peers.router`가 라우터가 아니라 하위 모듈이 되므로, 순서를 뒤집어 `feature.router`를 먼저 보면 모듈을 라우터로 넘기게 된다. 기능별로 `include_router(peers.router)` 같은 줄을 따로 쓰지 않는다.
+- `feature_router`는 `web_router`를 먼저 본다. 명령이 있는 기능(peers, flows)은 창구가 FastAPI를 불러오지 않도록 라우터를 묶지 않고 `web_router()`로 넘긴다. 그런데 `web_router()`를 한 번 부르면 `peers.router`가 라우터가 아니라 하위 모듈이 되므로, 순서를 뒤집어 `feature.router`를 먼저 보면 모듈을 라우터로 넘기게 된다. 기능별로 `include_router(peers.router)` 같은 줄을 따로 쓰지 않는다.
 - 화면 파일
   - 기본 위치 `DEFAULT_DIST`는 이 파일 위치에서 계산한 `<저장소>/frontend/dist` 절대 경로다. 현재 폴더 기준이 아니다.
   - 앱을 만들 때 `dist` 폴더가 있으면 `/assets`에 `dist/assets`를 연결한다. `dist`는 있는데 `dist/assets`가 없으면 Starlette `StaticFiles`가 RuntimeError를 내 앱 생성, 곧 서버 시작이 실패한다. 화면을 다시 빌드하면 풀린다.
@@ -47,7 +47,7 @@
   - 저장소 루트에서 실행한다. PDF 폴더(`./reports`)와 종목표 기본 경로가 현재 폴더 기준이다.
 - FastAPI는 `web` 명령이 돌 때만 불러온다.
   - `cli.py`는 어느 명령이든 `research_desk.web.server`를 import한다. 그래서 `server.py` 최상위는 `argparse`와 `core.settings`만 import하고, `uvicorn`과 `.app`(FastAPI와 모든 기능)은 `serve()` 안에서 import한다. `web/__init__.py`는 아무것도 import하지 않는다.
-  - 이유: FastAPI·uvicorn은 `requirements-workspace.txt`에만 있다. `collect`·`tag`·`stocks`·`prices`·`peers inspect`는 웹 패키지 없이 돌고 가볍게 시작해야 한다. `research_desk/tests/test_cli.py`가 새 프로세스로 `python -m research_desk`를 돌려 `fastapi`·`uvicorn`·`research_desk.web.app`(과 LangGraph·pymongo·유사 기업 웹 쪽)이 불러와지지 않았는지 확인한다.
+  - 이유: FastAPI·uvicorn은 `requirements-workspace.txt`에만 있다. `collect`·`tag`·`stocks`·`prices`·`flows`·`peers inspect`는 웹 패키지 없이 돌고 가볍게 시작해야 한다. `research_desk/tests/test_cli.py`가 새 프로세스로 `python -m research_desk`를 돌려 `fastapi`·`uvicorn`·`research_desk.web.app`(과 LangGraph·pymongo·유사 기업 웹 쪽·수급 웹 쪽)이 불러와지지 않았는지 확인한다.
   - 예외: `peers build`는 실행 중에 리포트 기능 창구를 거쳐 FastAPI를 불러오므로, `web`처럼 웹 패키지가 설치돼 있어야 돈다. 명령 없는 실행과 다른 명령은 그대로 웹 패키지에 기대지 않는다.
 
 ## 이 칸의 방식

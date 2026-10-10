@@ -2,10 +2,10 @@
 
 ## 맡는 일
 
-- `settings.py`: 설정을 읽는 유일한 방법. `.env` 읽기(`load_env`), 값 읽기 도우미(`required`·`optional`·`get_int`·`get_float`·`get_bool`·`model_name`), 여러 칸이 함께 쓰는 값(Supabase URL·서비스 키·DB URL, 두 공급자의 API 키, `STORAGE_BASE_DIR`, `KRX_CSV_PATH`), 설정 누락 오류 `MissingSetting`, 기능 준비 실패 오류 `NotReady`.
+- `settings.py`: 설정을 읽는 유일한 방법. `.env` 읽기(`load_env`), 값 읽기 도우미(`required`·`optional`·`get_int`·`get_float`·`get_bool`·`model_name`), 여러 칸이 함께 쓰는 값(Supabase URL·서비스 키·DB URL, 두 공급자의 API 키, `STORAGE_BASE_DIR`, `KRX_CSV_PATH`, 주가·수급 갱신이 같이 쓰는 KIS 계정 값 `kis_app_key()`·`kis_app_secret()`·`kis_base_url()`·`kis_token_cache()`와 기본 주소 `DEFAULT_KIS_BASE_URL`), 설정 누락 오류 `MissingSetting`, 기능 준비 실패 오류 `NotReady`.
 - `db.py`: Supabase REST 클라이언트(서비스 키), Postgres 직접 연결 풀(asyncpg), 그 위의 얇은 `SupabaseSQL`(fetch/execute, 행은 dict)과 연결 하나로 여러 문장을 묶는 트랜잭션 도우미 `SupabaseSQL.transaction()`.
 - `llm.py`: 모델 이름으로 공급자(Anthropic API, OpenAI API, 로컬 Codex CLI)를 골라 구조화 출력을 받는 `LLMClient`(`parse` — 사용자 메시지에 그림 PNG를 붙이는 `images` 인자 포함)와 OpenAI 임베딩(`embed`), 그림을 받는 모델인지 이름으로 판정하는 `supports_images`와 그 오류 `ImageInputUnsupported`, 키 확인 `require_key`, 일시 오류 묶음 `TRANSIENT_ERRORS`, 한 번 재시도 `call_with_retry`.
-- `kis.py`: 한국투자증권 Open API 클라이언트 `KisClient`(접근 토큰, 수정주가 일봉 `daily_prices`, 현재가 `quote`, 호출 간격·재시도·키 가리기), 오류 `KisError`.
+- `kis.py`: 한국투자증권 Open API 클라이언트 `KisClient`(접근 토큰, 수정주가 일봉 `daily_prices`, 현재가 `quote`, 종목별 투자자매매동향(일별) `investor_daily`, 호출 간격·재시도·키 가리기), 오류 `KisError`.
 - `mongo.py`: MongoDB 읽기 핸들 `mongo_collection`과 접속 확인 `ping`.
 - `pdf.py`: 저장 폴더 안의 PDF인지 확인(`resolve_in_storage`), 쪽별 글자, 쪽 수, 쪽 그림(PNG). PyMuPDF를 쓰는 모든 호출은 프로세스 전체 잠금 하나(`_PYMUPDF_LOCK`)로 줄 세운다. import할 때 MuPDF가 오류·경고를 stdout에 직접 찍지 못하게 끈다(`pymupdf.TOOLS.mupdf_display_errors(False)`·`mupdf_display_warnings(False)`) — 명령의 stdout은 JSON 하나여야 하는데, 어떤 PDF는 `MuPDF error: format error: …`를 그 앞에 끼워 넣었다. 끄지 않는다. 오류는 지금처럼 예외나 빈 결과로 드러난다.
 - 외부 도구 `supabase`·`asyncpg`·`openai`·`anthropic`·`dotenv`·`fitz`/`pymupdf`·`pymongo`/`bson`·`httpx`는 저장소 전체에서 이 칸만 import한다. DB 연결·AI 호출·외부 API·PDF 열기·`.env` 읽기를 한곳에 모아 두어, 나중에 서버를 옮기거나 공급자를 바꿀 때 고칠 범위가 이 칸으로 줄어든다.
@@ -14,14 +14,14 @@
 
 - 업무 개념. 리포트·종목·분류 상태·분석 대상 규칙·종목표 버전은 `research_desk.domain`이다. core는 이런 이름을 모르게 둔다.
 - research_desk의 다른 칸 import. core는 core만 import한다(어기면 `R1 core`).
-- 표와 SQL. core는 어느 표의 주인도 아니다. `reports`·`failed_attempts`·`report_summaries`·주가 표·유사 기업 표를 `.table(…)`나 문자열 SQL로 다루면 `R11 표 주인`으로 잡힌다. SQL은 표의 주인 칸(`collector`, `tagger`, `features/review`, `features/reports`, `features/analysis`, `features/prices`, `features/peers`)에 둔다. docstring에 표 이름을 쓰는 것은 괜찮다.
-- KIS 응답을 주가 스냅샷으로 바꾸는 계산(수익률·초과수익률·실행 상태)은 `features/prices`, 사업보고서 문서를 고르는 규칙(회계연도·대상 회사)은 `features/peers`의 몫이다. core는 받은 값을 그대로 넘긴다.
+- 표와 SQL. core는 어느 표의 주인도 아니다. `reports`·`failed_attempts`·`report_summaries`·주가 표·유사 기업 표·수급 표를 `.table(…)`나 문자열 SQL로 다루면 `R11 표 주인`으로 잡힌다. SQL은 표의 주인 칸(`collector`, `tagger`, `features/review`, `features/reports`, `features/analysis`, `features/prices`, `features/peers`, `features/flows`)에 둔다. docstring에 표 이름을 쓰는 것은 괜찮다.
+- KIS 응답을 주가 스냅샷으로 바꾸는 계산(수익률·초과수익률·실행 상태)은 `features/prices`, 투자자 필드를 주체로 묶고 거래일을 거르고 순위를 매기는 일은 `features/flows`, 사업보고서 문서를 고르는 규칙(회계연도·대상 회사)은 `features/peers`의 몫이다. core는 받은 값을 그대로 넘긴다.
 - 웹. FastAPI·starlette를 import하지 않고 HTTP 응답이나 상태 코드를 만들지 않는다. 오류는 평범한 예외로 던지고, 404·503으로 바꾸는 일은 기능(`features/*`)과 `web`이 한다.
 - 호출하는 쪽마다 다른 정책.
   - 모델 기본값은 `tagger/settings.py`·`features/analysis/settings.py`·`features/peers/settings.py`, 프롬프트와 응답 스키마는 각 칸에 있다.
   - 재시도와 시간 한도는 호출자가 정한다. 분류기는 SDK 재시도 2·요청 60초에 실패한 행을 `pending`으로 되돌리고, 분석·비교는 SDK 기본 재시도에 `call_with_retry`와 호출마다 `PHASE2_PER_REPORT_TIMEOUT_S`를 쓴다. 유사도 계산은 `call_with_retry`에 회사마다 `PEERS_PER_COMPANY_TIMEOUT_S`, 임베딩 호출마다 60초, 테마 검색의 질의 임베딩은 15초다.
   - 동시 호출 수도 호출자 몫이다. 분류기는 `MAX_CONCURRENT_LLM`(운영 천장 2), 웹 서버의 분석·비교는 analysis의 `ai_slot`(2), 테마 검색의 질의 임베딩은 peers의 자체 자리(2), 유사도 계산은 `PEERS_MAX_CONCURRENT_LLM`(운영 천장 2)이 막는다.
-  - KIS의 초당 호출 수는 호출자가 `max_calls_per_sec`로 넘긴다(`PRICES_MAX_CALLS_PER_SEC`).
+  - KIS의 초당 호출 수는 호출자가 `max_calls_per_sec`로 넘긴다(`PRICES_MAX_CALLS_PER_SEC`, `FLOWS_MAX_CALLS_PER_SEC`).
   - core에 공통 제한이나 기본 정책을 새로 넣지 않는다. 넣으면 호출자마다 지켜 온 방식이 한꺼번에 바뀐다. 예외는 하나, 일부러 둔 PDF 잠금이다(아래 PDF). 호출자의 정책이 아니라 PyMuPDF가 여러 스레드 동시 사용을 지원하지 않는다는 도구의 제약이라 core에 둔다. AI 호출은 줄 세우지 않는다.
 - 칸 전용 설정 값. 각 칸의 `settings.py`가 core 도우미로 읽는다.
 - 준비 판정. 무엇이 없으면 어느 기능이 멈추는지는 각 기능과 명령이 정한다. core는 `NotReady`를 정의할 뿐 스스로 던지지 않는다.
@@ -106,8 +106,9 @@ KIS(`KisClient`).
 - 재시도: HTTP 429나 KIS `EGW00201`(초당 거래건수 초과), 5xx, 시간 초과, 끊긴 연결만 1·2·4초 기다려 최대 3번 다시 묻는다. 그 밖의 응답은 바로 `KisError`(`code`·`status` 포함). `rt_cd`가 `0`이 아닌 데이터 응답도 `KisError`다.
 - 비밀 값: 앱키·시크릿은 요청 머리글과 토큰 요청 본문에만, 토큰은 머리글에만 싣는다. `KisError` 문장과 로그에는 넣지 않고, 응답이 그 값을 되풀이하면 `***`로 가린다(`_mask`).
 - 일봉(`daily_prices`): 수정주가(`FID_ORG_ADJ_PRC=0`), 한 번에 최대 100행·최신부터 오므로 기간이 길면 거꾸로 나눠 받아 합치고, 날짜 오름차순으로 돌려준다. 빈 숫자는 None.
-- 현재가(`quote`): 시가총액은 `hts_avls`(억원)에 1억을 곱해 원으로, 거래정지는 `temp_stop_yn=Y` 또는 상태 코드 58, 관리종목은 `mang_issu_cls_code=Y` 또는 상태 코드 51.
-- 기본 주소 `DEFAULT_BASE_URL`(실전 서비스)은 `features/prices/settings.py`에도 같은 값으로 적혀 있다(설정 읽기가 이 모듈을 불러오지 않게). 바꾸면 둘 다 바꾼다 — 테스트가 같은지 본다.
+- 현재가(`quote`): 시가총액은 `hts_avls`(억원)에 1억을 곱해 원으로, 거래정지는 `temp_stop_yn=Y` 또는 상태 코드 58, 관리종목은 `mang_issu_cls_code=Y` 또는 상태 코드 51. 시가총액은 지금 값 하나뿐이다 — KIS에는 과거 날짜의 시총이나 상장주식수를 주는 API가 없다(`국내주식기간별시세`의 `hts_avls`도 응답의 `output1`, 지금 값에만 있다).
+- 투자자매매동향(`investor_daily(code, anchor)`, `FHPTJ04160001`): 시장 `J`(KRX), `anchor`에서 끝나는 30거래일이 한 번에 오고 날짜 오름차순으로 돌려준다. 행은 `{"date", "close"(종가 `stck_clpr`), <이름이 `pbmn`으로 끝나는 KIS 필드>: 값}`이고 금액은 KIS 단위 그대로 백만 원, 빈 숫자는 None이다. 어느 필드가 어느 주체인지는 core가 모른다(`features/flows`의 몫). 상장 전 날은 종가 0인 행으로 채워 오고, 15:40 전에는 당일이 들어간 요청을 거절한다 — 둘 다 호출자가 다룬다.
+- 기본 주소 `DEFAULT_BASE_URL`(실전 서비스)은 `core/settings.py`의 `DEFAULT_KIS_BASE_URL`에도 같은 값으로 적혀 있다(설정 읽기가 이 모듈을 불러오지 않게. 주가·수급 기능의 설정이 그 값을 쓴다). 바꾸면 둘 다 바꾼다 — 테스트가 같은지 본다.
 
 MongoDB.
 - pymongo는 함수 안에서만 import한다(명령 없는 실행이 pymongo를 불러오지 않는다는 입구 테스트가 이것에 기댄다).
@@ -141,7 +142,7 @@ PDF.
   - DB: `db.asyncpg.create_pool`을 AsyncMock으로 바꾸고, 연결과 레코드는 가짜(`FakePool`, `FakeConn`, dict가 아닌 Mapping인 `FakeRecord`)를 쓴다. 트랜잭션은 한 연결에서 돌고 커밋되는지, 블록이 예외·문장 실패·취소로 끝나면 되돌리고 예외를 올리는지, `fetch`/`execute`가 여전히 따로 연결을 빌리는지 본다.
   - PDF: `tmp_path`에 pymupdf로 만든다. 한글은 내장 `korea` 글꼴로 넣어야 글자 추출이 된다. 잠금은 가짜 `pymupdf`(`fake_pymupdf`)로 여러 스레드에서 동시에 불러, PyMuPDF 안에서 두 호출이 겹치지 않는지(실패하는 호출도 포함), 실패한 호출이 다음 호출을 막지 않는지 본다. MuPDF의 stdout 출력이 꺼져 있는지도 본다.
   - 그림 입력: Anthropic 두 경로는 그림이 글자 앞, OpenAI는 글자 뒤 `data:` 주소, codex는 `-i` 파일, 그림이 없으면 요청이 예전과 같음, 시스템 프롬프트가 그림 유무와 상관없이 같음, 글자 전용 모델은 요청 전에 `ImageInputUnsupported`.
-  - KIS: httpx `MockTransport`가 KIS 서버 노릇을 하고, 기본 주소는 `.invalid`(절대 풀리지 않는 이름)라 요청이 PC 밖으로 나가지 못한다. 기다림은 가짜 시계·가짜 `sleep`으로 재서 실제로 자지 않는다. 토큰 1회, 토큰 파일(쓰기·읽기·쓸 수 없는 파일·거절된 토큰 한 번 교체), 나눠 받기, 재시도 횟수와 간격, 토큰 실패 기억, 오류 문장에 키·토큰 없음을 본다.
+  - KIS: httpx `MockTransport`가 KIS 서버 노릇을 하고, 기본 주소는 `.invalid`(절대 풀리지 않는 이름)라 요청이 PC 밖으로 나가지 못한다. 기다림은 가짜 시계·가짜 `sleep`으로 재서 실제로 자지 않는다. 토큰 1회, 토큰 파일(쓰기·읽기·쓸 수 없는 파일·거절된 토큰 한 번 교체), 나눠 받기, 투자자매매동향의 요청 값과 행 모양, 재시도 횟수와 간격, 토큰 실패 기억, 오류 문장에 키·토큰 없음을 본다.
   - MongoDB: `pymongo.MongoClient`를 가짜로 바꾼다(서버 없음). 새 프로세스로 `core.mongo` import가 pymongo·bson을 불러오지 않는지도 본다.
   - 임베딩: OpenAI 클라이언트의 `embeddings.create`를 가짜로 바꿔 요청 모양(모델·차원·순서)과 순서 맞추기, 비 OpenAI 모델 거절을 본다.
 - 설정 테스트는 `RD_CORE_*`처럼 다른 테스트와 겹치지 않는 변수 이름과 `monkeypatch.setenv`·`delenv`를 쓴다. `.env` 동작은 `env_file` fixture로만 시험한다.
