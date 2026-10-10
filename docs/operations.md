@@ -4,7 +4,7 @@
 
 ## 처음 설치 (순서대로)
 
-1. 파이썬 가상 환경과 패키지. 수집·분류·주가 갱신(`prices update`)·`peers inspect`만 쓰면 `requirements.txt`(MongoDB용 pymongo, KIS용 httpx 포함), 웹앱과 유사도 계산(`peers build`)까지 쓰면 `requirements-workspace.txt`(FastAPI·uvicorn 추가 — `peers build`는 실행 중에 리포트 기능을 거쳐 FastAPI를 불러온다), 테스트·커밋 검사까지 쓰면 `requirements-dev.txt`(pytest 추가, 앞의 둘 포함).
+1. 파이썬 가상 환경과 패키지. 수집·분류·주가 갱신(`prices update`)·수급 갱신(`flows update`)·`peers inspect`만 쓰면 `requirements.txt`(MongoDB용 pymongo, KIS용 httpx 포함), 웹앱과 유사도 계산(`peers build`)까지 쓰면 `requirements-workspace.txt`(FastAPI·uvicorn 추가 — `peers build`는 실행 중에 리포트 기능을 거쳐 FastAPI를 불러온다), 테스트·커밋 검사까지 쓰면 `requirements-dev.txt`(pytest 추가, 앞의 둘 포함).
    ```powershell
    python -m venv .venv
    .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
@@ -30,11 +30,12 @@
 | `python -m research_desk tag requeue <조건…> [--apply]` | 이미 분류된 `auto`·`review_needed` 행 가운데 조건에 맞는 것을 `pending`으로 되돌림(다시 분류는 평소 백필). 조건 `--unreadable`, `--publisher-not-in-dictionary`, `--publisher-filename-mismatch`, `--publisher-type-mismatch`, `--krx-unmatched` 중 하나 이상. 기본은 미리 보기(아무것도 쓰지 않음), `--apply`면 백업 CSV를 먼저 쓰고 한 트랜잭션으로 되돌림. AI를 부르지 않는다. 아래 "다시 분류 대기" |
 | `python -m research_desk web [--view reports\|market\|review]` | 웹앱을 `http://127.0.0.1:8520/?view=<view>`에서 실행(Ctrl+C로 종료) |
 | `python -m research_desk stocks set-version --as-of YYYY-MM-DD` | 종목표 버전 정보 파일 갱신 |
-| `python -m research_desk prices update` | 종목표 전 종목의 주가를 KIS에서 받아 주가 스냅샷과 실행 기록을 갱신(아래 "매일 주가 갱신"). `--codes 005930,080220`은 그 종목만 받아 계산 결과를 출력하고 아무것도 저장하지 않는 확인용 |
+| `python -m research_desk prices update` | 종목표 전 종목의 주가를 KIS에서 받아 주가 스냅샷·수정 종가 이력·실행 기록을 갱신(아래 "매일 주가·수급 갱신"). `--codes 005930,080220`은 그 종목만 받아 계산 결과를 출력하고 아무것도 저장하지 않는 확인용 |
+| `python -m research_desk flows update` | 종목표 전 종목의 투자자별 일별 순매수를 KIS에서 받아 수급 원자료를 채우고 기준 거래일의 250거래일 순위를 매김(아래 "매일 주가·수급 갱신"). `--codes 005930,080220`은 그 종목만 250거래일치를 받아 이 PC에서 순위를 계산해 출력하고 아무것도 저장하지 않는 확인용 |
 | `python -m research_desk peers build` | 사업보고서로 회사 프로필·임베딩을 만들고 유사도 계산 결과를 공개(아래 "유사 기업 계산"). `--fiscal-year N`, `--codes …`·`--limit n`(대상 줄이기), `--pilot`(시험 실행: 공개하지 않고 회사마다 비슷한 회사 상위 10 출력) |
 | `python -m research_desk peers inspect` | 회계연도·프로필 버전·상태별 프로필 수와 토큰, 최근 빌드 10개를 JSON으로 |
 
-종료 코드: `collect`는 0 성공 / 1 전체 실패 / 2 일부 실패. `tag`·`stocks`·`prices`·`peers`는 0 정상 / 4 준비 문제(아무것도 바꾸지 않았다 — 안내대로 고친 뒤 다시 실행한다. 재시도로는 안 풀린다) / 1 그 밖의 오류. `prices update`는 실행이 `failed`(받지 못한 종목이 20% 초과)여도 1, `peers build`는 `incomplete`·분류 작업 진행 중·다른 빌드 진행 중도 1, `tag requeue --apply`는 이 PC에서 백필·재처리·수집·웹앱이 돌고 있어 거절할 때 1이다(아무것도 바꾸지 않았다 — 그 작업이 끝나거나 끈 뒤 다시 실행한다). 인자 오류는 모두 2.
+종료 코드: `collect`는 0 성공 / 1 전체 실패 / 2 일부 실패. `tag`·`stocks`·`prices`·`flows`·`peers`는 0 정상 / 4 준비 문제(아무것도 바꾸지 않았다 — 안내대로 고친 뒤 다시 실행한다. 재시도로는 안 풀린다) / 1 그 밖의 오류. `prices update`·`flows update`는 실행이 `failed`(받지 못한 종목이 20% 초과)여도 1, `flows update`는 주가 갱신이나 다른 수급 갱신이 진행 중이라 시작하지 않았을 때도 1, `peers build`는 `incomplete`·분류 작업 진행 중·다른 빌드 진행 중도 1, `tag requeue --apply`는 이 PC에서 백필·재처리·수집·웹앱이 돌고 있어 거절할 때 1이다(아무것도 바꾸지 않았다 — 그 작업이 끝나거나 끈 뒤 다시 실행한다). 인자 오류는 모두 2.
 
 ## 웹앱 (Research Desk)
 
@@ -45,19 +46,26 @@
 - 한 기능의 준비가 실패하면(DB 설정 없음, 종목표를 못 읽음, 분석 모델 키 없음) 그 기능 화면만 "○○ 기능을 지금 쓸 수 없습니다: 이유"로 막히고 나머지는 동작한다. 빠진 파일을 채우거나 `.env`에 빠진 값을 넣으면 다음 요청에 회복된다. 이미 있던 `.env` 값을 바꾼 것은 서버를 다시 켜야 한다.
 - 검토 되돌리기는 서버 메모리에만 있어서, 서버를 다시 켜면 직전 처리를 되돌릴 수 없다.
 - 유사 기업 탭과 테마 검색은 공개된 유사도 계산 결과(`peers build`가 `done`으로 끝난 빌드)가 있어야 동작한다. 없으면 `유사 기업 기능을 지금 쓸 수 없습니다: 아직 공개된 유사도 계산 결과가 없습니다(…)`. 새 빌드가 `done`이 되면 웹앱을 다시 켜지 않아도 다음 요청부터 쓴다. 테마 검색에는 `OPENAI_API_KEY`도 있어야 한다.
-- 모든 화면 맨 위 상태 줄이 주가·리포트 기준일을 보여 준다. 빨간색이면 문장을 보고 원인을 찾는다: 주가가 밀렸으면 작업 스케줄러의 마지막 실행 결과와 `price_update_runs`의 최근 행, 리포트가 밀렸으면 수집(`collect`)이 멈췄는지와 분류 대기(`tag inspect`의 `pending`). 회색 `자료 기준일 확인 불가`면 DB 설정을 본다.
+- 수급 랭킹과 기업 화면 수급 탭은 `flows update`가 순위를 매긴 날이 있어야 동작한다. 없으면 수급 랭킹이 `수급 기능을 지금 쓸 수 없습니다: 아직 순위를 매긴 날이 없습니다(…)`. 새 날이 매겨지면 웹앱을 다시 켜지 않아도 다음 요청부터 보인다.
+- 모든 화면 맨 위 상태 줄이 주가·수급·리포트 기준일을 보여 준다. 빨간색이면 문장을 보고 원인을 찾는다: 주가가 밀렸으면 작업 스케줄러의 마지막 실행 결과와 `price_update_runs`의 최근 행, 수급이 밀렸으면 같은 예약 실행의 결과(주가 갱신이 실패하면 수급은 건너뛴다)와 `investor_flow_runs`의 최근 행, 리포트가 밀렸으면 수집(`collect`)이 멈췄는지와 분류 대기(`tag inspect`의 `pending`). 회색 `자료 기준일 확인 불가`면 DB 설정을 본다.
 
-## 매일 주가 갱신
+## 매일 주가·수급 갱신
+
+윈도우 작업 스케줄러의 `ResearchDesk-prices-update`(평일 18:30)가 `scripts\run-prices.ps1`을 부른다. 스크립트는 `prices update`를 돌리고, 그것이 0으로 끝났을 때만 이어서 `flows update`를 돌린다. 주가 갱신이 실패한 날은 `주가 갱신이 성공하지 못해 수급 갱신을 건너뜁니다. …` 한 줄을 남기고 주가의 종료 코드로 끝난다(토큰을 못 받은 날 수급이 토큰을 또 묻지 않게). 건너뛴 날의 수급 원자료는 다음 실행이 채우지만, 그날은 시총을 받지 못해 수급 랭킹 날짜에 오르지 않는다.
 
 준비(순서대로 — 앞 단계가 없으면 뒤 단계가 실패한다):
-1. `.env`에 `KIS_APP_KEY`, `KIS_APP_SECRET`(한국투자증권 실전 계정)을 넣는다. 없으면 `prices update`가 4로 멈춘다. 시크릿은 180자다 — 짧은 값이면 KIS가 `EGW00105 유효하지 않은 AppSecret`으로 토큰을 주지 않는다. `KIS_TOKEN_CACHE`에 masterdb의 토큰 파일 경로를 넣어 토큰을 같이 쓴다(KIS는 토큰을 자주 받는 앱키를 제한한다).
-2. 마이그레이션 008을 적용한다(아래 "DB 마이그레이션 적용"). 적용 전에는 `--codes` 확인 실행도 저장된 스냅샷을 읽다가 표가 없어 1로 끝난다.
-3. KIS 확인(아무것도 저장하지 않는다 — 스냅샷·실행 기록·상태 줄 모두 그대로):
+1. `.env`에 `KIS_APP_KEY`, `KIS_APP_SECRET`(한국투자증권 실전 계정)을 넣는다. 없으면 `prices update`·`flows update`가 4로 멈춘다. 시크릿은 180자다 — 짧은 값이면 KIS가 `EGW00105 유효하지 않은 AppSecret`으로 토큰을 주지 않는다. `KIS_TOKEN_CACHE`에 masterdb의 토큰 파일 경로를 넣어 토큰을 같이 쓴다(KIS는 토큰을 자주 받는 앱키를 제한한다).
+2. 마이그레이션 008과 009를 적용한다(아래 "DB 마이그레이션 적용"). 008 전에는 `--codes` 확인 실행도 저장된 스냅샷을 읽다가 표가 없어 1로 끝난다. 009 전에는 `prices update`가 수정 종가 이력 표를 읽다가 실패하고(실행 기록 `failed`, 스냅샷은 그대로) 수급은 건너뛴다. `flows update`를 손으로 돌려도 표가 없어 1로 끝난다.
+3. KIS 확인(아무것도 저장하지 않는다 — 스냅샷·이력·수급 원자료·실행 기록·상태 줄 모두 그대로). 3번과 4번은 같은 토큰 파일의 토큰을 같이 쓴다. 돌리기 전에 토큰 파일의 유효 시각을 확인하고(토큰 값은 출력하지 않는다), masterdb의 KIS 수집 시각과 겹치지 않는 한 시간대에 몰아서 돌린다(아래 운영 원칙 7).
    ```powershell
    python -m research_desk prices update --codes 005930,080220
+   python -m research_desk flows update --codes 005930,080220
    ```
-   두 종목의 계산 결과 JSON과 `확인용 실행이라 아무것도 저장하지 않았습니다: …` 한 줄이 나오고 0이면 KIS 접속이 된다. 저장된 스냅샷이 아직 없으면 초과수익률은 비어 나온다(정상). `market_cap`·`traded`·`flags`를 HTS 화면과 한 번 대조한다.
-4. 전체 실행을 한 번 손으로 돌린다: `powershell -File scripts\run-prices.ps1`. 마지막 줄이 `주가 갱신이 끝났습니다.`이고 종료 코드 0이면 된다. 상태 줄의 주가 기준일이 바뀐다.
+   - 주가: 두 종목의 계산 결과 JSON과 `확인용 실행이라 아무것도 저장하지 않았습니다: …` 한 줄이 나오고 0이면 KIS 접속이 된다. 저장된 스냅샷이 아직 없으면 초과수익률은 비어 나온다(정상). `market_cap`·`traded`·`flags`를 HTS 화면과 한 번 대조한다.
+   - 수급: 종목마다 기준일(`as_of`), 창 일수(`window_days`), 11개 주체의 금액(`amounts`, 원)과 250일 순위(`ranks`), 기관합계 항등식 차이(`institution_gap`, 백만 원)가 나온다. 사모·외국인·기타법인 금액을 HTS의 투자자별 매매동향 화면(억 원)과 대조하고, `institution_gap`이 0인지 본다. 장 마감 뒤 18:00 전에는 그 전 평일까지를 받는다(기준일 규칙).
+4. 전체 실행을 한 번 손으로 돌린다: `powershell -File scripts\run-prices.ps1`. 마지막 줄이 `수급 갱신이 끝났습니다.`이고 종료 코드 0이면 된다. 상태 줄의 주가·수급 기준일이 바뀐다.
+   - **첫 채우기.** 009 뒤 첫 주가 갱신은 종목마다 1년치 이력을 처음 쓰고, 첫 수급 갱신은 종목마다 310거래일치(KIS 11번 안팎, 2,500여 종목이면 2만 8천 번 안팎)를 받는다. 둘을 합쳐 1시간이 넘게 걸린다. 그다음 날부터는 수급이 종목마다 한 번(달력용 삼성전자는 11번 안팎)이다.
+   - 수급 랭킹의 날짜는 이 실행의 기준 거래일 하루로 시작해 매일 하나씩 쌓인다. 그 전 날짜는 과거 시총이 없어 만들 수 없다.
 5. 윈도우 작업 스케줄러에 등록한다. 기본 작업 폴더(git worktree가 아닌 저장소 폴더)의 루트에서:
    ```powershell
    $repo = (Get-Location).Path
@@ -65,11 +73,12 @@
    ```
    경로에 공백이 있으면 `/TR` 안의 경로를 `\"…\"`로 감싼다. 시각은 사용자의 masterdb 프로젝트의 KIS 수집 시각과 겹치지 않게 고른다(아래 운영 원칙 7). 18:30이 아닌 시각으로 바꾸면 상태 줄의 기준 시각(20:00, `features/freshness/logic.py`의 `CUTOFF`)이 실행이 끝난 뒤인지 확인한다. 확인: `schtasks /Run /TN "ResearchDesk-prices-update"` 뒤 상태 줄과 `schtasks /Query /TN "ResearchDesk-prices-update" /V /FO LIST`의 마지막 결과(0이면 성공, 1 실패, 4 준비 문제).
 
-결과 읽기:
-- 0: `ok`(모두 받음) 또는 `partial`(받지 못한 종목 20% 이하 — 그 종목은 이전 값에 `no_data` 표시).
-- 1: `failed`(20% 초과 — 스냅샷은 하나도 바뀌지 않음), 접근 토큰을 못 받음, 실행 중 오류. 요약 줄과 `price_update_runs`의 `message`(못 받은 종목과 첫 실패 이유)를 본다. 다시 돌리면 처음부터 다시 받는다.
+결과 읽기(스크립트의 종료 코드는 주가가 0이 아니면 주가의 코드, 0이면 수급의 코드다):
+- 0: 주가와 수급이 모두 `ok`(모두 받음) 또는 `partial`(받지 못한 종목 20% 이하). 주가에서 못 받은 종목은 이전 값에 `no_data` 표시가 붙고, 수급에서 못 받은 종목은 그날 순위표에 없다(원자료는 다음 실행이 받는다).
+- 1: 주가가 `failed`(20% 초과 — 스냅샷은 하나도 바뀌지 않음)이거나 접근 토큰을 못 받았거나 실행 중 오류였다(수급은 건너뜀). 또는 수급이 `failed`(20% 초과 — 순위를 매기지 않음, 받은 원자료는 남음)이거나 기준 종목(005930)을 못 받았거나 시작을 거절했다(주가 갱신·다른 수급 갱신이 진행 중). 요약 줄과 `price_update_runs`·`investor_flow_runs`의 `message`(못 받은 종목과 첫 실패 이유)를 본다. 주가는 다시 돌리면 처음부터 다시 받는다. 수급은 다시 돌리면 저장된 종목은 한 번씩만 묻고 못 받은 종목은 빠진 기간까지 받는다.
 - 4: 준비 문제. 찍힌 이유대로 고친다.
-- PC가 꺼져 있거나 잠들어 스케줄러가 그 시각을 건너뛰면 실행 기록이 없고, 상태 줄이 그날 20:00부터 빨간색이 된다. 손으로 `scripts\run-prices.ps1`을 돌리면 된다.
+- PC가 꺼져 있거나 잠들어 스케줄러가 그 시각을 건너뛰면 실행 기록이 없고, 상태 줄이 그날 20:00부터 빨간색이 된다. 손으로 `scripts\run-prices.ps1`을 돌리면 된다(하루 한 번 원칙은 그대로다).
+- 수급만 실패한 날 수급만 다시 돌리려면 `python -m research_desk flows update`. 그날 주가 갱신이 성공한 뒤여야 순위가 매겨진다 — 주가 스냅샷의 기준일이 그날이 아닌 종목은 시총이 없어 순위를 매기지 않고, 그런 종목만 있으면 그날은 날짜 목록에 오르지 않는다.
 
 ## 유사 기업 계산 (연 1회)
 
@@ -147,9 +156,10 @@ powershell -File scripts\run-batches.ps1 -Iterations N -BatchSize 10
 - `peers build`는 분류 작업이 진행 중이면 시작하지 않는다(종료 코드 1, `분류 작업이 진행 중이라…`). 그러나 이 확인은 정상 `tag run`이 지금 가져간 행만 본다. 반복 분류 스크립트의 배치 사이(다음 배치가 뜨는 몇 초)나 `tag escalate`·`tag run --row-ids`가 도는 중이면 통과한다. 백필 창이 열려 있으면 빌드를 시작하지 않는다.
 - 반대 방향은 자동으로 막지 않는다. 유사도 계산이 도는 동안(`peers inspect`의 `builds`에 `running`이 있으면) 분류 백필을 시작하지 않는다.
 
-### 7. KIS 수집은 masterdb와 같은 시간에 돌리지 않는다
-- `KIS_APP_KEY`는 사용자의 다른 프로젝트(masterdb)와 같은 키다. 같은 키로는 초당 호출 한도와 접근 토큰 발급(1분에 한 번쯤)을 나눠 쓴다. 겹치면 토큰을 못 받아 `prices update` 실행 전체가 `failed`(1)로 끝나거나, 한도 초과 재시도가 늘어 실패 종목이 생긴다.
-- 작업 스케줄러 시각을 정하거나 손으로 돌리기 전에 masterdb 쪽 KIS 수집 시각을 확인한다. 토큰 실패 직후 다시 돌릴 때는 1분 이상 기다린다.
+### 7. KIS 실행은 하루 한 시간대에 하나씩, masterdb와 겹치지 않게
+- `KIS_APP_KEY`는 사용자의 다른 프로젝트(masterdb)와 같은 키다. 같은 키로는 초당 호출 한도와 접근 토큰 발급(1분에 한 번쯤)을 나눠 쓰고, 토큰을 자주 받으면 앱키 이용이 제한된다. 겹치면 토큰을 못 받아 실행 전체가 `failed`(1)로 끝나거나, 한도 초과 재시도가 늘어 실패 종목이 생긴다.
+- `prices update`와 `flows update`는 같은 키·같은 토큰 파일을 쓰고, 예약 작업 안에서 차례로 돌아 겹치지 않는다. 손으로 돌릴 때도 한 번에 하나만 돌린다. `flows update`는 주가 갱신이나 다른 수급 갱신이 진행 중이면(시작 2시간 안의 `running`) 스스로 시작하지 않지만(1), `prices update`는 수급 갱신이 도는지 보지 않는다 — 수급 갱신 중에 주가 갱신을 손으로 시작하지 않는다.
+- KIS를 부르는 실행(확인 실행 포함)은 하루 한 시간대에 몰아서 한다. 작업 스케줄러 시각을 정하거나 손으로 돌리기 전에 masterdb 쪽 KIS 수집 시각과 토큰 파일의 유효 시각을 확인한다(토큰 값은 출력하지 않는다). 토큰 실패 직후 다시 돌릴 때는 1분 이상 기다린다.
 
 ## 모니터링
 
@@ -164,7 +174,9 @@ langsmith trace list --project telegram_report --error --last-n-minutes 30
 python -m research_desk peers inspect
 ```
 
-- 예약 작업은 웹앱의 상태 줄로 본다(주가 기준일·리포트 기준일, 밀리면 빨간색과 이유). 주가 실행의 자세한 기록은 Supabase SQL 편집기에서 `select * from price_update_runs order by started_at desc limit 5;`(상태·성공·실패 수·메시지).
+- 예약 작업은 웹앱의 상태 줄로 본다(주가·수급·리포트 기준일, 밀리면 빨간색과 이유). 자세한 기록은 Supabase SQL 편집기에서 본다.
+  - 주가: `select * from price_update_runs order by started_at desc limit 5;`(상태·성공·실패 수·메시지)
+  - 수급: `select * from investor_flow_runs order by started_at desc limit 5;`(상태·기준일·성공·실패 수·순위 매긴 날 수·메시지), 순위를 매긴 날은 `select * from investor_flow_days order by trade_date desc limit 5;`(날마다 순위를 매긴 종목 수)
 
 **정상 기준 (2026-05, 이전 분류 모델 기준):**
 - 신뢰도: high ≈79% / medium ≈18% / low ≈3%
@@ -214,10 +226,10 @@ python -m research_desk peers inspect
 | `INITIAL_CUTOFF_DAYS` | collect | 30 | DB가 비어 있을 때 첫 실행이 거슬러 가는 날 수 |
 | `MAX_CONCURRENT_DOWNLOADS` | collect | 4 | 동시 다운로드 수. 재시도와 새 수집이 한 한도를 나눠 쓴다. FloodWait 경고가 없을 때 백필에서 8까지 |
 | `LOG_LEVEL` | collect | INFO | `-v`면 DEBUG |
-| `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` | collect·prices update·peers build·peers inspect(필수, 없으면 `prices`·`peers`는 4), 웹의 DB 기능 | — | 없으면 웹의 리포트·커버리지·검토·비교·유사 기업·상태 줄이 사용 불가 |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` | collect·prices update·flows update·peers build·peers inspect(필수, 없으면 `prices`·`flows`·`peers`는 4), 웹의 DB 기능 | — | 없으면 웹의 리포트·커버리지·검토·비교·유사 기업·수급·상태 줄이 사용 불가 |
 | `SUPABASE_DB_URL` | 모든 `tag` 명령 | 필수 | Postgres 직접 연결 주소. 없으면 `SUPABASE_DB_URL is required`, 4 |
 | `STORAGE_BASE_DIR` | collect, tag, web | `./reports` | PDF 저장 폴더. 세 단계가 같은 값을 써야 한다 |
-| `KRX_CSV_PATH` | tag run/escalate, web, stocks set-version, prices update, peers build | `docs/stock_data/KRX_stocks_data.csv` | 종목표. 버전 정보 파일은 같은 폴더의 `<이름>.version.json`. 버전이 안 맞으면 `tag run/escalate`·`peers build`는 4, `prices update`와 웹은 그대로 동작 |
+| `KRX_CSV_PATH` | tag run/escalate, web, stocks set-version, prices update, flows update, peers build | `docs/stock_data/KRX_stocks_data.csv` | 종목표. 버전 정보 파일은 같은 폴더의 `<이름>.version.json`. 버전이 안 맞으면 `tag run/escalate`·`peers build`는 4, `prices update`·`flows update`와 웹은 그대로 동작 |
 | `LLM_MODEL_DEFAULT` / `LLM_MODEL_ESCALATION` / `LLM_MODEL_PHASE2` | tag run / tag escalate / 웹 분석·비교 | 위 모델 표 | 옛 이름 `OPENAI_MODEL_*`도 읽음 |
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | 모델 이름이 정한 공급자 | 쓰는 공급자 것만 | 유사 기업 기능(`peers build`의 임베딩, 웹 테마 검색)은 모델과 상관없이 `OPENAI_API_KEY`가 필요하다 |
 | `ANTHROPIC_EFFORT` / `CODEX_REASONING_EFFORT` / `CODEX_BIN` | AI 호출 | medium / high / PATH의 codex | |
@@ -228,10 +240,11 @@ python -m research_desk peers inspect
 | `PHASE2_MAX_INPUT_TOKENS` | 웹 분석 | 30000 | 넣을 PDF 글자의 토큰 어림 한도(글자 수 ÷ 3) |
 | `PHASE2_SUMMARY_VERSION` | 웹 분석 | `llm-summary@1.0` | 화면에 보일 분석 결과 버전. 바꾸면 기존 분석이 화면에서 사라진다 |
 | `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`, `LANGSMITH_ENDPOINT` | AI 호출 기록 | 선택 | `LANGSMITH_TRACING=true`이고 키가 있으면 LangGraph 실행과 LLM 호출을 LangSmith에 기록 |
-| `KIS_APP_KEY`, `KIS_APP_SECRET` | prices update | 필수(없으면 4) | 한국투자증권 Open API 실전 계정의 앱키·시크릿. 사용자의 masterdb 프로젝트와 같은 키다(위 운영 원칙 7) |
-| `KIS_BASE_URL` | prices update | `https://openapi.koreainvestment.com:9443` | KIS 실전 서비스 주소 |
+| `KIS_APP_KEY`, `KIS_APP_SECRET` | prices update, flows update | 필수(없으면 4) | 한국투자증권 Open API 실전 계정의 앱키·시크릿. 사용자의 masterdb 프로젝트와 같은 키다(위 운영 원칙 7) |
+| `KIS_BASE_URL` | prices update, flows update | `https://openapi.koreainvestment.com:9443` | KIS 실전 서비스 주소 |
 | `PRICES_MAX_CALLS_PER_SEC` | prices update | 10 | KIS 호출을 1초에 몇 번까지 시작할지(토큰 요청 포함). 0보다 큰 수가 아니면 파이썬 오류로 1 |
-| `KIS_TOKEN_CACHE` | prices update | 없음(토큰을 메모리에만 두고 실행마다 새로 받음) | KIS 접근 토큰 파일. masterdb 저장소의 `data/state/kis_token.json`을 가리키면 유효한 토큰을 같이 쓰고, 새로 받은 토큰도 그 파일에 쓴다. 토큰이 들어 있으므로 이 저장소 밖에 두고 커밋하지 않는다 |
+| `FLOWS_MAX_CALLS_PER_SEC` | flows update | 10 | 수급 갱신의 KIS 호출을 1초에 몇 번까지 시작할지(토큰 요청 포함). 0보다 큰 수가 아니면 파이썬 오류로 1 |
+| `KIS_TOKEN_CACHE` | prices update, flows update | 없음(토큰을 메모리에만 두고 실행마다 새로 받음) | KIS 접근 토큰 파일. masterdb 저장소의 `data/state/kis_token.json`을 가리키면 유효한 토큰을 같이 쓰고, 새로 받은 토큰도 그 파일에 쓴다. 토큰이 들어 있으므로 이 저장소 밖에 두고 커밋하지 않는다 |
 | `LLM_MODEL_PEERS` / `LLM_MODEL_PEERS_ESCALATION` | peers build | `claude-sonnet-5-5` / `gpt-5.4` | 프로필 추출 모델 / 근거율 0.8 미만일 때 한 번 더 추출할 모델(위 모델 표). 옛 이름 `OPENAI_MODEL_PEERS*`도 읽음 |
 | `PEERS_EMBED_MODEL` | peers build | `text-embedding-3-large` | 임베딩 모델. 1536차원을 낼 수 있는 OpenAI 모델만. 웹 테마 검색은 이 값이 아니라 공개 빌드에 기록된 모델을 쓴다 |
 | `PEERS_PROFILE_VERSION` | peers build | `peer-profile@1.2` | 프로필의 키. 바꾸면 다음 빌드가 모든 회사를 새로 추출한다(AI 비용). 화면은 공개 빌드의 버전을 따른다 |
@@ -240,7 +253,7 @@ python -m research_desk peers inspect
 | `PEERS_PER_COMPANY_TIMEOUT_S` | peers build | 120 | 회사 하나의 추출(재추출 포함) 시간 한도(초). 넘으면 그 회사는 실패 |
 | `DART_MONGO_URL` / `DART_MONGO_DB` / `DART_MONGO_COLLECTION` | peers build | `mongodb://localhost:27017/` / `FS` / `A001_v2` | 사업보고서 텍스트 MongoDB(읽기만). 별도 저장소의 DART 수집 프로그램이 채운다. 주소에 비밀번호가 들어갈 수 있다 |
 
-숫자 설정(`PRICES_*`, `PEERS_*`)이 숫자가 아니면 그 명령은 준비 문제(4)가 아니라 파이썬 오류(1)로 끝난다.
+숫자 설정(`PRICES_*`, `FLOWS_*`, `PEERS_*`)이 숫자가 아니면 그 명령은 준비 문제(4)가 아니라 파이썬 오류(1)로 끝난다.
 
 `.env`에 남아 있는 `HEARTBEAT_ENABLED`·`HEARTBEAT_INTERVAL_S`·`PHASE2_MAX_CONCURRENT`는 아무도 읽지 않는다. 지워도 된다.
 
@@ -283,6 +296,11 @@ python -m research_desk peers inspect
   1. 먼저 SQL 편집기에서 pgvector 확장의 위치를 본다: `select extnamespace::regnamespace from pg_extension where extname = 'vector';`. 결과가 없거나 `extensions`면 적용한다. `public`이면 적용하지 않고 사용자와 정한다 — 008의 표와 함수가 `extensions.vector` 타입을 써서 실패한다.
   2. 파일 전체를 한 번 실행한다(맨 앞의 확장 만들기 뒤는 한 트랜잭션이고, 끝에서 PostgREST에 표를 다시 읽게 한다).
   3. 확인: `python -m research_desk peers inspect`가 빈 목록(`"profiles": []`, `"builds": []`)을 찍고 0으로 끝나면 표가 REST로 보인다.
+- 009(`009_investor_flows_price_history.sql`)는 수급 표 네 개(`investor_flow_daily`, `investor_flow_runs`, `investor_flow_days`, `investor_flow_stocks`), 주가 이력 표 `stock_price_daily`, DB 함수 두 개(`rank_investor_flows`, `investor_flow_coverage`. 서비스 키로만 실행)를 만든다. 데이터는 바꾸지 않고 다시 실행해도 깨지지 않는다(멈출 작업도, 백업할 행도 없다).
+  1. 먼저 같은 이름이 이미 있는지 본다: `select table_name from information_schema.tables where table_schema = 'public' and table_name in ('investor_flow_daily', 'investor_flow_runs', 'investor_flow_days', 'investor_flow_stocks', 'stock_price_daily');`와 `select proname from pg_proc where proname in ('rank_investor_flows', 'investor_flow_coverage');`. 결과가 있으면 적용하지 않고 무엇인지 확인한다.
+  2. 파일 전체를 한 번 실행한다(한 트랜잭션이고, 끝에서 PostgREST에 표와 함수를 다시 읽게 한다).
+  3. 확인: `select relname, relrowsecurity from pg_class where relname in (위 다섯 표);`가 모두 true(RLS 켜짐). 웹앱에서 상태 줄에 `수급 자료가 아직 한 번도 갱신되지 않았습니다`가 보이고 수급 랭킹이 `아직 순위를 매긴 날이 없습니다(…)`면 표가 REST로 보인다(KIS를 부르지 않는 확인).
+  4. 순서: 이 저장소의 새 코드(주가 이력·수급)를 예약 실행이나 웹앱으로 돌리기 전에 적용한다. 009 없이 돌리면 `prices update`가 실패하고(스냅샷은 그대로), 웹앱은 상태 줄 주소가 예기치 못한 오류의 503이 되어 모든 화면의 상태 줄이 회색 `자료 기준일 확인 불가`가 된다.
 
 ## 테스트
 
