@@ -51,6 +51,7 @@ telegram_report/
 │   │   └── freshness/AGENTS.md      ← 모든 화면 맨 위 상태 줄(자료 기준일)
 │   └── web/AGENTS.md                ← 웹 서버 조립, 공통 보안 장치, 기능 등록 목록
 ├── frontend/                        ← React 화면 (빌드 결과 frontend/dist를 웹 서버가 내줌. 유사 기업·테마 검색은 src/peers/, 상태 줄은 src/freshness/)
+│   └── AGENTS.md                    ← 화면 파일 지도, 서버 문장·값 목록의 사본이 있는 곳, 보기 이름, 브라우저 저장 키, 확인 방법
 ├── migrations/                      ← DB 구조·데이터 변경 SQL (번호 순서, 수동 적용)
 ├── scripts/                         ← run-batches.ps1(백필 반복 분류), start-workspace.ps1(웹앱 빌드·실행), run-prices.ps1(매일 주가 갱신, 작업 스케줄러가 부름)
 └── .githooks/                       ← 커밋·병합 커밋마다 전체 테스트
@@ -71,6 +72,7 @@ telegram_report/
 - **분류기(`research_desk/tagger`)나 백필을 건드리기 전:** `docs/operations.md`의 운영 원칙·자동 처리 사건 표, `docs/business-rules.md`의 상태 전이와 분류 규칙.
 - **DB 쿼리·표·마이그레이션을 건드리기 전:** `docs/standards.md`의 표 주인 규칙과 데이터 규칙, `docs/engineering-notes.md`의 "운영 DB 데이터 고치기" 점검표와 Supabase REST의 1000행 한도 함정.
 - **웹 주소나 응답을 건드리기 전:** `docs/contracts.md` — 화면이 그 모양에 그대로 의존한다.
+- **화면(`frontend/`)을 건드리기 전:** `frontend/AGENTS.md`와 `docs/contracts.md` — 화면이 서버 문장을 글자 그대로 비교하는 자리와 서버 값 목록의 사본(제외 사유, 등급·반응 표기)이 있다.
 - **분류 체계 값(리포트 종류·사유·발행처 종류)이나 종목표를 바꾸기 전:** `docs/business-rules.md`의 값 집합과 종목표 버전 — DB 제약과 LLM 응답 모양을 함께 바꿔야 한다.
 - **발행처 사전(`research_desk/tagger/vocabulary/publishers.yaml`)을 고치기 전:** `docs/operations.md`의 "다시 분류 대기" — 사전 원문이 분류 AI 요청에 그대로 들어가므로 백필 중에는 고치지 않고, 고친 뒤 `tag requeue`로 해당 행을 다시 분류한다.
 - **호스트·출처 검사, PDF 내주기, 비밀 값을 건드리기 전:** `docs/security.md`.
