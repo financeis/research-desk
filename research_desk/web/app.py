@@ -47,12 +47,12 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from research_desk.core.settings import NotReady
-from research_desk.features import companies, compare, coverage, freshness, peers, reports, review
+from research_desk.features import companies, compare, coverage, flows, freshness, peers, reports, review
 
 logger = logging.getLogger(__name__)
 
 # The feature registration list (spec §2, §13): a feature with web addresses is one more name here.
-FEATURES = [companies, reports, compare, coverage, review, peers, freshness]
+FEATURES = [companies, reports, compare, coverage, review, peers, freshness, flows]
 
 TITLE = 'Research Desk'
 ALLOWED_HOSTS = ['127.0.0.1', 'localhost', 'testserver']
