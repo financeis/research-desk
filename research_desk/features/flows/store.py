@@ -26,6 +26,9 @@ as ISO text with an offset.
   order, with a new query for each page: postgrest-py's ``range()`` adds offset/limit to the query
   instead of replacing them. The coverage function's answer is paged the same way (the limit holds
   for RPC answers too). One stock's latest rows are one request of at most ``PAGE`` rows.
+- A day is ranked ``RANK_STOCKS`` stocks a call. The API cancels any statement after 8 seconds
+  (the ``authenticator`` role's ``statement_timeout``), and one call over every stock (about 2,500)
+  runs about 15 seconds, mostly writing the rows; a call of 200 stocks takes about a second.
 - A day's ranked stocks (``rank_pe_fund`` and ``market_cap`` both set) are counted by the server
   (``count='exact'``, no row fetched).
 - A run starts as ``running`` and is finished with its status, counts and message. "Latest" is the
@@ -33,7 +36,8 @@ as ISO text with an offset.
 
 Not atomic across requests: a stock's raw rows are one request (a stock has at most about 330),
 and each request stands alone. If one fails, what was written before stays and the run is closed
-as ``failed``; the next run asks again.
+as ``failed``; the next run asks again. A day's ranking calls stand alone too: the stocks of the
+calls before a failed one stay ranked.
 """
 from __future__ import annotations
 
@@ -50,6 +54,7 @@ COVERAGE_FUNCTION = "investor_flow_coverage"
 
 PAGE = 1000          # Supabase REST answers at most 1000 rows a request
 UPSERT_ROWS = 500    # rows in one upsert request
+RANK_STOCKS = 200    # stocks in one rank_investor_flows call: one statement stays far below 8 seconds
 MINIMAL = "minimal"  # a write whose answer is not needed returns no rows
 
 NET_COLUMNS: tuple[str, ...] = tuple(logic.net_column(key) for key in logic.INVESTOR_KEYS)
@@ -139,11 +144,15 @@ def count_ranked(sb, day: str) -> int:
 def rank_day(sb, day: str, caps: Mapping[str, int], *, window: int = logic.WINDOW_DAYS,
              min_days: int = logic.MIN_DAYS) -> int:
     """Have ``rank_investor_flows`` rank the unranked rows of ``day`` of the stocks in ``caps``
-    (``{code: market cap in won}``) over ``window`` days with ``min_days`` at least; the number of
-    rows it ranked."""
-    result = sb.rpc(RANK_FUNCTION, {"p_day": day, "p_caps": dict(caps), "p_window": window,
-                                    "p_min_days": min_days}).execute()
-    return int(result.data or 0)
+    (``{code: market cap in won}``) over ``window`` days with ``min_days`` at least,
+    ``RANK_STOCKS`` stocks a call (one call when ``caps`` is empty); the number of rows it ranked."""
+    items = list(caps.items())
+    ranked = 0
+    for start in range(0, max(len(items), 1), RANK_STOCKS):
+        result = sb.rpc(RANK_FUNCTION, {"p_day": day, "p_caps": dict(items[start:start + RANK_STOCKS]),
+                                        "p_window": window, "p_min_days": min_days}).execute()
+        ranked += int(result.data or 0)
+    return ranked
 
 
 def read_coverage(sb, since: str) -> dict[str, dict]:

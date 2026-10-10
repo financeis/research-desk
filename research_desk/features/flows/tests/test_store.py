@@ -16,7 +16,7 @@ import pytest
 
 from research_desk.features.flows import store
 
-from .fakes import COVERAGE_FUNCTION, DAILY, DAYS, NET, RANK, RANK_FUNCTION, RUNS, STOCKS, FakeSupabase
+from .fakes import COVERAGE_FUNCTION, DAILY, DAYS, NET, RANK, RANK_FUNCTION, RUNS, STOCKS, FakeDBError, FakeSupabase
 
 NOW = "2026-10-09T10:00:00+00:00"
 D = "2026-10-09"
@@ -133,7 +133,7 @@ def test_the_ranked_rows_of_a_day_are_counted_by_the_server():
 
 # ── the DB functions ─────────────────────────────────────────────────────────
 
-def test_ranking_a_day_is_one_call_with_the_caps_and_the_window():
+def test_a_day_of_a_few_stocks_is_ranked_in_one_call_with_the_caps_and_the_window():
     days = [(date(2026, 1, 1) + timedelta(days=i)).isoformat() for i in range(282)]   # up to D
     db = FakeSupabase(**{DAILY: [raw(1, day) for day in days]})
     assert store.rank_day(db, D, {code(1): 5 * 10**11}, window=250, min_days=60) == 1
@@ -141,6 +141,40 @@ def test_ranking_a_day_is_one_call_with_the_caps_and_the_window():
     assert call.params == {"p_day": D, "p_caps": {code(1): 5 * 10**11}, "p_window": 250, "p_min_days": 60}
     row = db.row(DAILY, code(1), D)
     assert (row["market_cap"], row["window_days"], row["rank_pe_fund"], row["ranked_at"]) == (5 * 10**11, 250, 1, NOW)
+
+
+def test_a_day_of_many_stocks_is_ranked_RANK_STOCKS_stocks_a_call():
+    # one call over every stock outran the API's 8-second statement limit (2026-10-11)
+    caps = {code(i): (i + 1) * 10**9 for i in range(2 * store.RANK_STOCKS + 1)}
+    db = FakeSupabase(**{DAILY: [raw(i) for i in range(len(caps))] + [raw(9999)]})   # 9999: no cap
+    assert store.rank_day(db, D, caps, window=250, min_days=1) == len(caps)
+    calls = db.rpcs(RANK_FUNCTION)
+    assert [len(call.params["p_caps"]) for call in calls] == [store.RANK_STOCKS, store.RANK_STOCKS, 1]
+    assert [c for call in calls for c in call.params["p_caps"]] == list(caps)   # each stock once, in order
+    assert all(call.params["p_caps"][c] == caps[c] for call in calls for c in call.params["p_caps"])
+    assert all((call.params["p_day"], call.params["p_window"], call.params["p_min_days"]) == (D, 250, 1)
+               for call in calls)
+    assert all(db.row(DAILY, c, D)["market_cap"] == cap for c, cap in caps.items())
+    assert db.row(DAILY, code(9999), D)["ranked_at"] is None
+
+
+def test_a_failed_ranking_call_keeps_the_stocks_ranked_before_it():
+    caps = {code(i): 10**12 for i in range(store.RANK_STOCKS + 1)}
+    db = FakeSupabase(**{DAILY: [raw(i) for i in range(len(caps))]})
+    real_rank, calls = db.rank, []
+
+    def rank(params):   # the first call ranks, the second runs out of time
+        calls.append(params)
+        if len(calls) > 1:
+            raise FakeDBError("canceling statement due to statement timeout")
+        return real_rank(params)
+
+    db.rank = rank
+    with pytest.raises(FakeDBError):
+        store.rank_day(db, D, caps, window=250, min_days=1)
+    ranked = [c for c in caps if db.row(DAILY, c, D)["ranked_at"] is not None]
+    assert ranked == list(caps)[:store.RANK_STOCKS]
+    assert db.row(DAILY, code(store.RANK_STOCKS), D)["ranked_at"] is None
 
 
 def test_the_coverage_is_read_through_the_db_function_1000_a_page():
