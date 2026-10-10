@@ -78,12 +78,13 @@ def kis_row(day, close=61_000, **amounts):
     return {"date": day, "close": close, **{field: 0 for field in FIELDS}, **amounts}
 
 
-def block(anchor, listed=None, history_from=None):
+def block(anchor, listed=None, history_from=None, missing=()):
     """A fake KIS answer: the 30 market days ending at ``anchor``, with closes of 0 before
-    ``listed`` (KIS's padding before a listing) and nothing before ``history_from``."""
+    ``listed`` (KIS's padding before a listing), nothing before ``history_from``, and without the
+    ``missing`` days (days KIS never returns)."""
     days = [day for day in MARKET if day <= anchor][-30:]
     return [kis_row(day, close=0 if listed is not None and day < listed else 61_000)
-            for day in days if history_from is None or day >= history_from]
+            for day in days if (history_from is None or day >= history_from) and day not in missing]
 
 
 def fetched(blocks):
@@ -113,14 +114,15 @@ def fill(stored=None, listed_from=None, **kis):
     return anchors, blocks
 
 
-def deepen(size, stored_days=()):
-    """Fetch one stock until the planner has ``size`` trading days. → (anchors, blocks)."""
+def deepen(size, **kis):
+    """Fetch one stock until the planner has ``size`` trading days, newest block first.
+    → (the anchors asked, the blocks)."""
     anchors, blocks, anchor = [], [], D
     while anchor is not None:
         assert len(anchors) < 40, "the planner never stopped"
         anchors.append(anchor)
-        blocks.append(block(anchor))
-        anchor = logic.next_depth_anchor(blocks, stored_days, size)
+        blocks.append(block(anchor, **kis))
+        anchor = logic.next_depth_anchor(blocks, size)
     return anchors, blocks
 
 
@@ -403,32 +405,34 @@ def test_the_calendar_values():
     assert logic.CALENDAR_CODE == "005930"
 
 
-def test_the_first_calendar_takes_11_blocks_of_the_calendar_stock():
+def test_every_calendar_takes_11_blocks_of_the_calendar_stock():
     anchors, blocks = deepen(logic.CALENDAR_DAYS)
-    assert len(anchors) == 11
+    assert len(anchors) == 11   # 11 × 30 = 330 days reach the 310th
     assert anchors[1] == MARKET[-30] - timedelta(days=1)   # the day before the earliest fetched
     assert logic.calendar_days(blocks) == MARKET[-310:]
 
 
-def test_a_daily_calendar_uses_the_stored_days_that_meet_the_latest_block():
-    stored_days = MARKET[:-1]   # stored up to yesterday
-    anchors, blocks = deepen(logic.CALENDAR_DAYS, stored_days)
-    assert anchors == [D]
-    assert logic.calendar_days(blocks, stored_days) == MARKET[-310:]
-    assert logic.calendar_days(blocks, [day.isoformat() for day in stored_days]) == MARKET[-310:]
+def test_the_calendar_comes_from_kis_blocks_only():
+    # Stored days are never taken: a gap inside them could not be seen.
+    assert list(inspect.signature(logic.calendar_days).parameters) == ["blocks", "size"]
+    assert list(inspect.signature(logic.next_depth_anchor).parameters) == ["blocks", "size"]
+    assert logic.calendar_days([block(D)]) == MARKET[-30:]
+    assert logic.next_depth_anchor([block(D)]) == MARKET[-30] - timedelta(days=1)
 
 
-def test_stored_days_that_do_not_reach_the_fetched_days_are_not_trusted():
-    stored_days = MARKET[:-44]   # the PC was off for 44 trading days
-    assert logic.calendar_days([block(D)], stored_days) == MARKET[-30:]   # the gap could hide days
-    anchors, blocks = deepen(logic.CALENDAR_DAYS, stored_days)
-    assert len(anchors) == 2
-    assert logic.calendar_days(blocks, stored_days) == MARKET[-310:]
+def test_a_short_answer_does_not_end_the_calendar():
+    # KIS never returns MARKET[-45]: the second answer has 29 rows, and the planner goes on.
+    anchors, blocks = deepen(logic.CALENDAR_DAYS, missing={MARKET[-45]})
+    assert len(blocks[1]) == 29 and len(anchors) == 11
+    assert logic.calendar_days(blocks) == [day for day in MARKET[-311:] if day != MARKET[-45]]
 
 
-def test_stored_days_after_the_latest_fetched_day_are_left_out():
-    stored_days = MARKET + [D + timedelta(days=3)]
-    assert logic.calendar_days([block(D)], stored_days) == MARKET[-310:]
+def test_the_calendar_stops_where_kis_has_nothing_older():
+    anchors, blocks = deepen(logic.CALENDAR_DAYS, history_from=MARKET[-100])
+    assert len(anchors) == 5 and blocks[-1] == []   # the fifth answer is empty
+    assert logic.calendar_days(blocks) == MARKET[-100:]
+    anchors, _ = deepen(logic.CALENDAR_DAYS, listed=MARKET[-45])
+    assert len(anchors) == 2                        # pre-listing padding
 
 
 def test_a_check_run_takes_9_blocks_for_250_days():

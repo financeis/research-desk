@@ -49,19 +49,21 @@ morning and the weekend give Friday). It knows weekdays only; for a weekday holi
 to the trading day before. One KIS call gives the ``BLOCK_DAYS`` (30) trading days ending at the
 anchor asked.
 
-Calendar and filling. ``blocks`` are the KIS answers (row lists) of one stock in this run in the
-order asked: the latest block first (asked at the run's anchor), then each older block, asked at
-the anchor these functions return; asking stops when they return None.
+Calendar and filling. ``blocks`` are the KIS answers (row lists) of one stock in this run, newest
+first, in the order asked: the latest block (asked at the run's anchor), then each older block,
+asked at the anchor these functions return; asking stops when they return None. An answer that
+brings no day older than the blocks before it (an empty answer included) means KIS has nothing
+older. A short answer (fewer than ``BLOCK_DAYS`` rows) alone does not: a day KIS never returns, or
+an answer cut short, would otherwise end the history early.
 
-- ``calendar_days(blocks, stored_days=(), size=310)``: the trading-day calendar from the calendar
-  stock ``CALENDAR_CODE`` (005930): the latest ``size`` days, oldest first, of the blocks' trading
-  days plus the stock's stored days up to the latest fetched day. Stored days count only when the
-  latest of them is on or after the earliest fetched day: stored days that end before the fetched
-  ones could hide trading days in between.
-- ``next_depth_anchor(blocks, stored_days=(), size=310)``: the anchor of the next older block until
-  ``calendar_days`` has ``size`` days — the calendar, or with ``size=WINDOW_DAYS`` and no stored
-  days the 250 days of a check run (about 9 blocks). None then, or when the blocks met pre-listing
-  padding, gave no trading day, or the last block brought no day older than the blocks before.
+- ``calendar_days(blocks, size=310)``: the trading-day calendar, the latest ``size`` trading days,
+  oldest first, of the blocks of the calendar stock ``CALENDAR_CODE`` (005930). It comes from this
+  run's KIS answers only. Stored days are never taken, since a gap inside them could not be seen,
+  so every run asks the calendar stock back about 11 blocks (330 days for 310).
+- ``next_depth_anchor(blocks, size=310)``: the anchor of the next older block until the blocks hold
+  ``size`` trading days (the calendar; ``size=WINDOW_DAYS`` gives a check run's 250 days, about 9
+  blocks). None then, or when the blocks met pre-listing padding, gave no trading day, or the last
+  answer brought no older day.
 - ``retention_start(calendar)``: the first day of the retention range, the earliest of the
   calendar's latest ``CALENDAR_DAYS`` (310 = the 250-day window + 60 days to look back) days; None
   for an empty calendar.
@@ -297,21 +299,18 @@ def anchor_day(now: datetime) -> date:
 
 # ── the calendar and filling ─────────────────────────────────────────────────
 
-def calendar_days(blocks: Sequence[Sequence[Mapping[str, Any]]], stored_days: Iterable[Any] = (),
-                  size: int = CALENDAR_DAYS) -> list[date]:
-    """The latest ``size`` trading days of the blocks plus the stored days that meet them."""
+def calendar_days(blocks: Sequence[Sequence[Mapping[str, Any]]], size: int = CALENDAR_DAYS) -> list[date]:
+    """The latest ``size`` trading days of this run's KIS blocks, oldest first (no stored day)."""
     if size < 1:
         raise ValueError("the calendar needs at least one day")
-    return _connected_days(blocks, stored_days)[-size:]
+    return _fetched(blocks)[0][-size:]
 
 
-def next_depth_anchor(blocks: Sequence[Sequence[Mapping[str, Any]]], stored_days: Iterable[Any] = (),
+def next_depth_anchor(blocks: Sequence[Sequence[Mapping[str, Any]]],
                       size: int = CALENDAR_DAYS) -> Optional[date]:
-    """The anchor of the next older block until ``calendar_days`` has ``size`` days, else None."""
+    """The anchor of the next older block until the blocks hold ``size`` trading days, else None."""
     days, padded, progressed = _fetched(blocks)
-    if padded or not days or not progressed:
-        return None
-    if len(_connected_days(blocks, stored_days)) >= size:
+    if padded or not days or not progressed or len(days) >= size:
         return None
     return days[0] - timedelta(days=1)
 
@@ -497,19 +496,6 @@ def _fetched(blocks: Sequence[Sequence[Mapping[str, Any]]]) -> tuple[list[date],
         last = [_as_date(row["date"]) for row in blocks[-1] if _is_trading(row)]
         progressed = bool(last) and (not before or min(last) < min(before))
     return days, merged.padded, progressed
-
-
-def _connected_days(blocks: Sequence[Sequence[Mapping[str, Any]]], stored_days: Iterable[Any]) -> list[date]:
-    """The blocks' trading days plus the stored days up to the latest of them, when the stored days
-    reach the earliest fetched day; oldest first."""
-    fetched = [_as_date(row["date"]) for row in trading_rows(row for rows in blocks for row in rows).rows]
-    if not fetched:
-        return []
-    stored = sorted({day for day in map(_as_date, stored_days) if day is not None and day <= fetched[-1]})
-    days = set(fetched)
-    if stored and stored[-1] >= fetched[0]:
-        days.update(stored)
-    return sorted(days)
 
 
 def _stored_reach(calendar: Sequence[date], coverage: Optional[Mapping[str, Any]], needed: date,
