@@ -87,7 +87,14 @@ an answer cut short, would otherwise end the history early.
   A day KIS never returns therefore makes every run ask the stock back to the needed start until
   that day leaves the range; what KIS gives is stored as it came.
 - ``raw_cutoff(anchor)`` = the run's anchor day (기준일, ``anchor_day``; the caller passes it) −
-  ``RAW_RETENTION_DAYS`` (470 calendar days): raw rows dated before it are deleted.
+  ``RAW_RETENTION_DAYS`` (470 calendar days). ``cleanup_cutoff(anchor, calendar)``: raw rows dated
+  before it are deleted — the earlier of ``raw_cutoff(anchor)`` and ``retention_start(calendar)``
+  (``raw_cutoff`` alone for an empty calendar), so a row on or after the retention start is never
+  deleted. 470 days alone is not enough for that: 310 trading days span about 450 to 465 calendar
+  days, and a run on a weekday holiday moves the anchor (``anchor_day`` gives the holiday) while
+  KIS's calendar stays, so anchor − 470 can come within a few days of the retention start, or pass
+  it. Past it, the cleanup would delete rows the fill plan needs: every stock would then be asked
+  back to the retention start on every run (about 11 answers each) and those rows deleted again.
   ``days_to_drop(days, keep=60)``: the ranked days beyond the latest ``keep``
   (``KEEP_RANKED_DAYS``), oldest first.
 
@@ -342,9 +349,17 @@ def next_fill_anchor(calendar: Sequence[date], coverage: Optional[Mapping[str, A
 
 
 def raw_cutoff(anchor: Any) -> date:
-    """Raw rows dated before this day are deleted: the run's anchor day (the caller passes it) −
-    ``RAW_RETENTION_DAYS``."""
+    """The run's anchor day (the caller passes it) − ``RAW_RETENTION_DAYS``."""
     return _as_date(anchor) - timedelta(days=RAW_RETENTION_DAYS)
+
+
+def cleanup_cutoff(anchor: Any, calendar: Sequence[Any]) -> date:
+    """Raw rows dated before this day are deleted: the earlier of ``raw_cutoff(anchor)`` and the
+    calendar's ``retention_start``, so a row the fill plan needs is never deleted;
+    ``raw_cutoff(anchor)`` for an empty calendar."""
+    cutoff = raw_cutoff(anchor)
+    start = retention_start(calendar)
+    return cutoff if start is None or cutoff <= start else start
 
 
 def days_to_drop(days: Iterable[Any], keep: int = KEEP_RANKED_DAYS) -> list[date]:
