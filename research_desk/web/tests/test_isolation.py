@@ -3,7 +3,9 @@
 A feature that cannot prepare answers 503 ``<기능 이름> 기능을 지금 쓸 수 없습니다: <이유>`` on its own
 addresses only; the other features and ``/api/health`` keep answering 200. A feature that reads
 through another feature's window shows the name of the feature that failed (coverage and compare
-show ``리포트``; freshness, which has nothing of its own to prepare, shows ``주가``).
+show ``리포트``; freshness, which has nothing of its own to prepare, reads the prices, flows and
+reports windows in that order and shows the first that fails: ``주가`` without DB settings, ``수급``
+when only the flows window is not ready).
 
 Peers (``유사 기업``) needs the DB settings, the stock list and a public build; its theme search
 also needs OPENAI_API_KEY. A build that becomes public is used from the next request, without a
@@ -20,15 +22,18 @@ The companies service uses a temp favorites file.
 from __future__ import annotations
 
 import json
+from datetime import date, datetime, timezone
 
 from fastapi.testclient import TestClient
 
 from research_desk.core import db as core_db
-from research_desk.features import coverage, prices
+from research_desk.features import coverage, prices, reports
 from research_desk.features.companies import service as companies_service
 from research_desk.features.companies.service import CompaniesService
 from research_desk.features.flows.tests import fakes as flows_fakes
 from research_desk.features.flows.tests import web_world as flows_world
+from research_desk.features.freshness import service as freshness_service
+from research_desk.features.freshness.logic import KST
 from research_desk.features.peers.tests import web_world as peers_world
 from research_desk.features.review.tests.fakes import KEY, URL, FakeSupabase, waiting
 
@@ -70,7 +75,7 @@ PEERS_ADDRESSES = [
     ('GET', '/api/stocks/016360/peers', None),
     ('POST', '/api/peers/search', {'q': '레거시 DRAM'}),
 ]
-# freshness reads the prices and reports windows (prices first)
+# freshness reads the prices, flows and reports windows (prices first, then flows)
 FRESHNESS_ADDRESSES = [
     ('GET', '/api/freshness', None),
 ]
@@ -229,3 +234,44 @@ def test_flows_also_waits_for_a_ranked_day_and_only_its_ranking_stops(app, stock
     assert ranked.status_code == 200
     assert ranked.json()['dates'] == [flows_world.DAY.isoformat()] and ranked.json()['total'] == 1
     assert [(row['code'], row['name'], row['rank']) for row in ranked.json()['rows']] == [('016360', '삼성증권', 4)]
+
+
+def test_a_flows_window_that_is_not_ready_stops_the_status_line_with_its_sentence(app, stock_csv, companies,
+                                                                                    monkeypatch):
+    # Freshness reads the prices, flows and reports windows in that order. The prices and reports
+    # windows answer here (stand-ins); flows is the real window, not ready without DB settings.
+    monkeypatch.setattr(prices, 'latest_run', lambda: {
+        'last_run_at': datetime(2026, 10, 8, 9, 30, tzinfo=timezone.utc), 'last_run_status': 'ok',
+        'as_of': date(2026, 10, 8)})
+    monkeypatch.setattr(reports, 'latest_report_sent_at', lambda: datetime(2026, 10, 8, 0, 12, tzinfo=timezone.utc))
+    # the process-wide freshness service on a fixed clock: Thursday 20:00 in Korea
+    monkeypatch.setattr(freshness_service, '_service',
+                        freshness_service.FreshnessService(clock=lambda: datetime(2026, 10, 8, 20, 0, tzinfo=KST)))
+    flows_db = flows_fakes.FakeSupabase(**{flows_fakes.RUNS: [
+        {'run_id': 1, 'started_at': '2026-10-08T09:45:00+00:00', 'status': 'ok', 'as_of': '2026-10-08'}]})
+    with TestClient(app) as client:
+        freshness = answers(client, FRESHNESS_ADDRESSES)
+        flows = answers(client, FLOWS_ADDRESSES)
+        health = client.get('/api/health')
+        workspace = client.get('/api/workspace')
+        screen = client.get('/')
+        # the cause fixed: the next request asks the flows window again, without a restart
+        monkeypatch.setenv('SUPABASE_URL', URL)
+        monkeypatch.setenv('SUPABASE_SERVICE_KEY', KEY)
+        monkeypatch.setattr(core_db, 'supabase_client', lambda url, key: flows_db)
+        recovered = client.get('/api/freshness')
+    flows_down = not_ready('수급', DB_REASON)   # the flows window's NotReady, passed through
+    assert freshness == [(address, 503, flows_down) for _, address, _ in FRESHNESS_ADDRESSES]
+    assert flows == [(address, 503, flows_down) for _, address, _ in FLOWS_ADDRESSES]
+    assert (health.status_code, health.json()) == (200, {'status': 'ok'})
+    assert (workspace.status_code, workspace.json()) == (200, {'stocks': CATALOG, 'favorites': []})
+    assert (screen.status_code, screen.content) == (200, INDEX_HTML)
+    assert (recovered.status_code, recovered.json()) == (200, {
+        'prices': {'as_of': '2026-10-08', 'last_run_at': '2026-10-08T18:30:00+09:00', 'last_run_status': 'ok',
+                   'stale': False, 'note': None},
+        'flows': {'as_of': '2026-10-08', 'last_run_at': '2026-10-08T18:45:00+09:00', 'last_run_status': 'ok',
+                  'stale': False, 'note': None},
+        'reports': {'latest_at': '2026-10-08T09:12:00+09:00', 'stale': False},
+        'checked_at': '2026-10-08T20:00:00+09:00',
+    })
+    assert flows_db.queries(flows_fakes.RUNS)   # the flows block came from the flows window's own read
