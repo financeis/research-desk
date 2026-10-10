@@ -16,7 +16,7 @@ Checked:
   note; the 20:00 is the prices' one, read when the rule runs; prices and flows are judged apart;
 - the reports: no in-scope report, the 3-day boundary measured from now (exactly 3 days is not
   older than 3 days), a sent_at after now, other zones, the adjustable days;
-- the shape: spec §12.3's example with the flows block after the prices one, the key order, times
+- the shape: the example answer with the flows block after the prices one, the key order, times
   as ISO text in Korea to the second, as_of as YYYY-MM-DD, None for what is not known; the failed
   status is the prices and the flows features' value; the inputs are not changed.
 
@@ -55,7 +55,7 @@ FLOWS_LAST_RUN_FAILED = '마지막 수급 갱신이 실패했습니다'
 RUN_STARTED = datetime(2026, 10, 8, 9, 30, tzinfo=timezone.utc)
 # The start of Thursday's flows update, after the price run, as the flows window gives it (aware, UTC).
 FLOWS_STARTED = datetime(2026, 10, 8, 9, 45, tzinfo=timezone.utc)
-# The newest in-scope report's sent_at behind spec §12.3's example (09:12 in Korea).
+# The newest in-scope report's sent_at behind the example answer (09:12 in Korea).
 LATEST_AT = datetime(2026, 10, 8, 0, 12, tzinfo=timezone.utc)
 
 
@@ -376,7 +376,7 @@ def test_the_report_days_are_three_and_read_when_the_rule_runs(monkeypatch):
 
 # ── the shape ────────────────────────────────────────────────────────────────
 
-# spec §12.3's example, with the flows block after the prices one
+# the example answer, with the flows block after the prices one
 SPEC_EXAMPLE = {
     'prices': {'as_of': '2026-10-08', 'last_run_at': '2026-10-08T18:30:00+09:00', 'last_run_status': 'ok',
                'stale': False, 'note': None},

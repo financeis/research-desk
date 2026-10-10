@@ -21,8 +21,8 @@ depends on it:
   now, ``status`` 'running'); one statement may not touch the same key twice; inserting a run
   gives it the next ``run_id``; inserting a key that exists is a unique violation;
 - update and delete need a filter (Supabase refuses them without one);
-- the NOT NULL and CHECK constraints of migration 009 hold (spec §5.1: the 11 ``net_*`` amounts are
-  NOT NULL integers, so a row written without them is refused), unknown columns are refused, dates
+- the NOT NULL and CHECK constraints of migration 009 hold (the 11 ``net_*`` amounts are NOT NULL
+  integers, so a row written without them is refused), unknown columns are refused, dates
   must be ``YYYY-MM-DD`` text; a violation raises ``FakeDBError`` and the statement writes nothing.
   Payloads must be JSON (a ``date`` object or NaN fails, like supabase-py's request);
 - ``rank_investor_flows(p_day, p_caps, p_window=250, p_min_days=60)``: for every row of ``p_day``
@@ -60,7 +60,7 @@ RANK_FUNCTION = "rank_investor_flows"
 COVERAGE_FUNCTION = "investor_flow_coverage"
 MAX_ROWS = 1000
 
-# migration 009 (spec §5.1)
+# migration 009
 KEYS = ("pe_fund", "foreigner", "institution", "pension", "trust", "fin_invest", "insurance", "bank",
         "other_fin", "other_corp", "individual")
 NET = tuple(f"net_{key}" for key in KEYS)

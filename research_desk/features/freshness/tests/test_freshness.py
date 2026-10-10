@@ -2,13 +2,13 @@
 
 Checked:
 - the window (``router``) and its one address with the handler name;
-- the answer: the prices, flows and reports windows' values judged at the clock's now (spec §12.3's
-  example with the flows block after the prices one), the key order, stale values with their note
+- the answer: the prices, flows and reports windows' values judged at the clock's now (the example
+  answer with the flows block after the prices one), the key order, stale values with their note
   (the flows ones too), nothing known yet as an answer and not a failure; the windows read in the
   order prices, flows, reports, every one asked again on every request (nothing cached) and now
   taken on every request; the default clock is the time in Korea; the windows looked up when
   called;
-- readiness (spec §12.4): ``NotReady`` from the prices window (``주가``), the flows window (``수급``)
+- readiness (docs/standards.md): ``NotReady`` from the prices window (``주가``), the flows window (``수급``)
   or the reports window (``리포트``) passes through unchanged — the route answers 503 with that
   feature's sentence while another address still answers; with several failing, the first in the
   reading order answers and the later ones are not asked; nothing of the failure is kept, so the
@@ -59,7 +59,7 @@ FLOWS_LAST_RUN_FAILED = '마지막 수급 갱신이 실패했습니다'
 AREAS = {'prices_error': '주가', 'flows_error': '수급', 'reports_error': '리포트'}
 
 NOW = datetime(2026, 10, 8, 20, 0, tzinfo=KST)   # Thursday evening: Thursday's prices are expected
-# The windows' answers behind spec §12.3's example (the flows update starts after the price run).
+# The windows' answers behind the example answer (the flows update starts after the price run).
 RUN = {'last_run_at': datetime(2026, 10, 8, 9, 30, tzinfo=timezone.utc), 'last_run_status': 'ok',
        'as_of': date(2026, 10, 8)}
 FLOWS_RUN = {'last_run_at': datetime(2026, 10, 8, 9, 45, tzinfo=timezone.utc), 'last_run_status': 'ok',

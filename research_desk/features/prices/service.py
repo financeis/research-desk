@@ -1,5 +1,5 @@
 """Prices service: the stored snapshots, run records and adjusted-close history other features
-read (spec §8, §12).
+read (docs/business-rules.md, 주가 스냅샷).
 
 Readiness. The DB is prepared on first use and kept for the life of the process:
 ``core.settings.load_env()``, then SUPABASE_URL and SUPABASE_SERVICE_KEY →

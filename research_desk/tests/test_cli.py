@@ -8,7 +8,8 @@ New:
 - ``--help`` exits 0 on every command; no command, an unknown command and bad arguments are
   argparse's usage error: exit 2 with the usage, no command run;
 - the help lists the commands in the order ``{collect,tag,web,stocks,prices,peers,flows}``;
-  ``prices``, ``peers`` and ``flows`` come through their feature windows' ``register_jobs`` (spec §13);
+  ``prices``, ``peers`` and ``flows`` come through their feature windows' ``register_jobs``
+  (docs/standards.md, 명령이 있는 기능의 창구);
 - a command's exit code comes back from ``main`` (collect without settings: 1, tag inspect without
   SUPABASE_DB_URL: 4, prices update / peers build / peers inspect / flows update without DB
   settings: 4) and,

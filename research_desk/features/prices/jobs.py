@@ -1,5 +1,5 @@
 """``prices update [--codes 005930,080220]``: the daily KIS price snapshot and the year of adjusted
-closes behind it (spec §8, §11).
+closes behind it (docs/business-rules.md, 주가 스냅샷; docs/contracts.md, ``prices update``).
 
 ``register(subparsers)`` adds ``prices`` and its subcommand ``update``; the window exports it as
 ``register_jobs`` for ``cli.py``. The command function returns the exit code.

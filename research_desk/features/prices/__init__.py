@@ -1,5 +1,5 @@
-"""Prices (주가): the daily KIS price snapshot of every stock in the stock list (spec §8), and a
-year of its adjusted daily closes.
+"""Prices (주가): the daily KIS price snapshot of every stock in the stock list, and a year of its
+adjusted daily closes (docs/business-rules.md, 주가 스냅샷).
 
 This feature owns ``stock_price_snapshot`` (one row per stock, the latest snapshot only),
 ``price_update_runs`` (one row per update run) and ``stock_price_daily`` (the adjusted closes,

@@ -1,7 +1,7 @@
 """DB reads and writes of the three price tables (Supabase REST).
 
 This feature owns ``stock_price_snapshot`` (one row per stock, the latest snapshot) and
-``price_update_runs`` (one row per ``prices update`` run), spec §14 / migration 008, and
+``price_update_runs`` (one row per ``prices update`` run), migration 008, and
 ``stock_price_daily`` (the adjusted-close history: one row per stock and day, primary key
 ``(stock_code, trade_date)``), migration 009. Every function takes the supabase-py client as its
 first argument. Values are stored as the logic makes them: returns in percent, money in whole won,

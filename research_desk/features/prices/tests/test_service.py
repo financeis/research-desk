@@ -1,5 +1,5 @@
-"""features.prices window: ``snapshots(codes)``, ``latest_run()`` (spec §8, §12.1, §12.3) and
-``daily_closes(codes, since)``.
+"""features.prices window: ``snapshots(codes)``, ``latest_run()`` and
+``daily_closes(codes, since)`` (docs/business-rules.md, 주가 스냅샷).
 
 The DB is the in-memory FakeSupabase handed out by core.db.supabase_client; without a test's
 setup core.db.supabase_client refuses. Checked: the window shape (§12.1 price + market, percent),

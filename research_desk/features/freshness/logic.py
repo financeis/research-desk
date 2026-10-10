@@ -1,5 +1,5 @@
-"""Freshness rules (spec §12.3): how current the price snapshot, the investor flows and the newest
-report are.
+"""Freshness rules (docs/business-rules.md, 상태 줄): how current the price snapshot, the investor
+flows and the newest report are.
 
 Pure: no DB, network, settings or files. Every function takes the window values (the prices and
 flows windows' ``latest_run()`` answers, the reports window's ``latest_report_sent_at()``) and "now"
@@ -34,9 +34,9 @@ Reports (``report_freshness``) are stale when there is no in-scope report, or wh
 in-scope report's sent_at is more than ``REPORT_STALE_DAYS`` (3) days before now — exactly 3 days
 is not stale. A sent_at after now is not stale.
 
-Output (``freshness_payload``, spec §12.3's keys in its order, the flows block after the prices
-one): times as ISO text in Korea cut to the second (``2026-10-08T09:12:00+09:00``), ``as_of`` as
-YYYY-MM-DD, None for what is not known.
+Output (``freshness_payload``, the keys of ``GET /api/freshness`` in docs/contracts.md in their
+order, the flows block after the prices one): times as ISO text in Korea cut to the second
+(``2026-10-08T09:12:00+09:00``), ``as_of`` as YYYY-MM-DD, None for what is not known.
 
 ``CUTOFF``, ``REPORT_STALE_DAYS`` and the sentences are adjustable here; the rules read them when
 they run.

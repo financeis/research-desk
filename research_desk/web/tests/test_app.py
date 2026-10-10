@@ -11,9 +11,9 @@ Ported from langgraph_tagger/workspace/tests/test_migration.py:
   days are 422, the review action without a reason and an unknown action are 422 (all before
   anything is read), then verify and its undo go through, on the old MemoryDB
 
-New: the route table is exactly spec §6's (with /assets, / and /openapi.json, and the peers,
+New: the route table is exactly docs/contracts.md's (with /assets, / and /openapi.json, and the peers,
 freshness and flows addresses) and in the feature order; ``feature_router``: a window's
-``web_router()`` when it has one, else its ``router`` (spec §13), which is how ``create_app``
+``web_router()`` when it has one, else its ``router`` (docs/standards.md), which is how ``create_app``
 mounts every feature; the screen files and their default folder; /openapi.json on, the docs pages
 off; the host and origin checks and their nesting; the 503 answers (NotReady: the feature's text
 and one warning line; anything else: the fixed sentence and its traceback in the log); the

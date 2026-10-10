@@ -1,5 +1,5 @@
-"""features.prices logic: the per-stock values, market medians and excess, run status (spec §8),
-and how a received stock's adjusted-close history is written.
+"""features.prices logic: the per-stock values, market medians and excess, run status, and how a
+received stock's adjusted-close history is written (docs/business-rules.md, 주가 스냅샷).
 
 Pure functions, no DB, network, settings or files. Boundary values checked here:
 - a return over N trading days needs N+1 closes (the latest and the one N trading days back):

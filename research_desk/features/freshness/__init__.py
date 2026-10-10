@@ -1,5 +1,5 @@
 """Freshness (자료 기준일): how current the price snapshot, the investor flows and the newest report
-are, for the status line on top of every screen (spec §12.3, §12.5).
+are, for the status line on top of every screen (docs/business-rules.md, 상태 줄).
 
 Public name:
 
@@ -35,7 +35,7 @@ Public name:
 The values come from the prices window (``prices.latest_run()``), the flows window
 (``flows.latest_run()``) and the reports window (``reports.latest_report_sent_at()``), read in
 that order on every request; nothing is cached. Their ``NotReady("주가", …)`` /
-``NotReady("수급", …)`` / ``NotReady("리포트", …)`` passes through unchanged (spec §12.4): the route
+``NotReady("수급", …)`` / ``NotReady("리포트", …)`` passes through unchanged (docs/standards.md): the route
 answers 503 with the sentence of the first that fails, and the next request asks again. This
 feature's own name is ``자료 기준일``; it has nothing to prepare.
 """
