@@ -216,6 +216,8 @@ class FakeFreshness:
     ANSWER = {
         'prices': {'as_of': '2026-10-08', 'last_run_at': '2026-10-08T18:30:00+09:00',
                    'last_run_status': 'ok', 'stale': False, 'note': None},
+        'flows': {'as_of': '2026-10-08', 'last_run_at': '2026-10-08T18:45:00+09:00',
+                  'last_run_status': 'ok', 'stale': False, 'note': None},
         'reports': {'latest_at': '2026-10-08T09:12:00+09:00', 'stale': False},
         'checked_at': '2026-10-08T20:00:00+09:00',
     }
