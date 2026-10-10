@@ -8,9 +8,11 @@ new PDF attachments to local disk + Supabase metadata.
 
 The same Python package, `research_desk`, then tags each report with an LLM (`tag`) and serves
 Research Desk, the local web app for reading, analyzing, comparing and reviewing the reports (`web`).
-Two batch jobs feed it more: a daily stock price snapshot from the KIS Open API (`prices update`)
-and a yearly build of business profiles from annual business reports (`peers build`) that finds
-companies with a similar business — the peers tab and the theme search in Research Desk.
+Three batch jobs feed it more: a daily stock price snapshot with a year of adjusted daily closes
+from the KIS Open API (`prices update`); right after it, the daily net buying by investor group
+(`flows update`) behind the flows ranking and the company flows tab; and a yearly build of
+business profiles from annual business reports (`peers build`) that finds companies with a
+similar business — the peers tab and the theme search in Research Desk.
 
 Design: [architecture.md](architecture.md) and the decision records in [tracking/decisions/](tracking/decisions/index.md).
 
@@ -55,7 +57,7 @@ Design: [architecture.md](architecture.md) and the decision records in [tracking
    - `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`: from Supabase dashboard → Settings → API → `service_role` key (⚠️ secret — never commit)
    - `SUPABASE_DB_URL`: from Supabase project settings → Database → Connection string (URI); every `tag` command needs it
    - `ANTHROPIC_API_KEY` / `OPENAI_API_KEY`: the key of each provider your models use (see [Analysis models](#analysis-models)); the peers features always need `OPENAI_API_KEY` for embeddings
-   - `KIS_APP_KEY`, `KIS_APP_SECRET`: the Korea Investment & Securities Open API key of a real account, for `prices update` (⚠️ secret — the same key as the masterdb project)
+   - `KIS_APP_KEY`, `KIS_APP_SECRET`: the Korea Investment & Securities Open API key of a real account, for `prices update` and `flows update` (⚠️ secret — the same key as the masterdb project)
 
 6. **First run** (will prompt for SMS verification once):
 
@@ -85,8 +87,10 @@ Every command is `python -m research_desk <command>`; `--help` on any command li
 | `python -m research_desk tag requeue <criteria> [--apply]` | Send classified `auto` / `review_needed` rows that meet the chosen criteria back to `pending`, so the usual backfill re-tags them under today's rules (no AI call; `verified` rows are never touched). Criteria, at least one: `--unreadable`, `--publisher-not-in-dictionary`, `--publisher-filename-mismatch`, `--publisher-type-mismatch`, `--krx-unmatched`. Without `--apply` it only prints a preview; `--apply` refuses while a backfill, escalate, collect or the web app runs, writes a CSV backup to `backups/requeue/` and reverts the rows in one transaction. See [docs/operations.md](operations.md) |
 | `python -m research_desk web` | Start Research Desk on http://127.0.0.1:8520/; `--view market` / `--view review` open the coverage / review views (default `--view reports`) |
 | `python -m research_desk stocks set-version --as-of YYYY-MM-DD` | Record the stock list's version after replacing it (see [Stock list update](#stock-list-update)) |
-| `python -m research_desk prices update` | Fetch every stock of the stock list from KIS and refresh the price snapshot and its run record (daily, through `scripts\run-prices.ps1`) |
+| `python -m research_desk prices update` | Fetch every stock of the stock list from KIS and refresh the price snapshot, the year of adjusted daily closes and the run record (daily, through `scripts\run-prices.ps1`) |
 | `python -m research_desk prices update --codes 005930,080220` | A check: fetch only these stocks and print the computed rows; writes nothing |
+| `python -m research_desk flows update` | Fetch every stock's daily net buying by the 11 KRX investor groups from KIS, keep the latest 310 trading days, and rank the base trading day: each stock's 250-trading-day ranks with that day's market cap from the price snapshot, fixed once written (daily, right after `prices update` through `scripts\run-prices.ps1`) |
+| `python -m research_desk flows update --codes 005930,080220` | A check: fetch only these stocks' last 250 trading days, rank their latest day on this PC and print JSON (amounts, ranks, window size, the 기관합계 identity gap); writes nothing |
 | `python -m research_desk peers build` | The yearly peers build: business profiles from the annual reports (MongoDB `FS.A001_v2`), embeddings, and a public build for the peers tab and the theme search. Options: `--fiscal-year N`, `--codes …` / `--limit n` (fewer targets), `--pilot` (a trial run that is never published and prints each target's ten nearest companies) |
 | `python -m research_desk peers inspect` | Print profile counts and tokens by fiscal year, profile version and status, and the latest builds, as JSON |
 
@@ -95,7 +99,12 @@ Mutually exclusive: `--cutoff-days` and `--backfill-days` cannot be used togethe
 `peers build` needs the web packages too (`requirements-workspace.txt`): it asks the reports
 feature whether tagging is running, and that loads FastAPI. It does not start while tagging is
 running (exit `1`), and a tagging backfill should not be started while it runs. The procedures for
-the daily prices and the yearly build are in [docs/operations.md](operations.md).
+the daily prices and flows and the yearly build are in [docs/operations.md](operations.md).
+
+`flows update` does not start while a price update or another flows update is running (a
+`running` run record less than 2 hours old; exit `1`, nothing changed), `--codes` included: a
+check shares the KIS app key's call limit. It asks KIS up to today from 18:00 KST on a weekday,
+else up to the weekday before; see [Daily prices and investor flows](#daily-prices-and-investor-flows).
 
 `tag inspect` and `tag reset-worker` need only `SUPABASE_DB_URL`; `tag requeue` needs it and a
 readable publisher dictionary, but no API key; `tag run` and `tag escalate` also check the
@@ -118,22 +127,26 @@ so total in-flight downloads stay bounded.
 - `1` Total failure (config / auth / network)
 - `2` Partial failure — some messages added to `failed_attempts` table; will be auto-retried next run
 
-`tag` (every subcommand), `stocks set-version`, `prices update` and `peers build` / `peers inspect`:
+`tag` (every subcommand), `stocks set-version`, `prices update`, `flows update` and `peers build` /
+`peers inspect`:
 
-- `0` Done (`prices update`: an `ok` or `partial` run; `peers build`: a `done` or pilot build)
+- `0` Done (`prices update` / `flows update`: an `ok` or `partial` run, or a `--codes` check that
+  received every code; `peers build`: a `done` or pilot build)
 - `4` Preparation problem — a missing setting (`<NAME> is required`, or a Korean sentence for
-  `prices` and `peers`), no codex CLI for a `codex:` model, a stock list that cannot be read or
-  does not match its version file, a bad `--as-of` date, an unreachable MongoDB or no business
-  report texts, and for `tag requeue` an unreadable publisher dictionary, `--unreadable` with a
-  tagging model that takes no images, or a process list that cannot be read. The reason is
+  `prices`, `flows` and `peers`), no codex CLI for a `codex:` model, a stock list that cannot be
+  read or does not match its version file, a bad `--as-of` date, an unreachable MongoDB or no
+  business report texts, and for `tag requeue` an unreadable publisher dictionary, `--unreadable`
+  with a tagging model that takes no images, or a process list that cannot be read. The reason is
   printed on stderr; `tag` stops before it takes or changes any row, `stocks set-version` leaves
-  the version file as it was, `prices update` calls neither KIS nor the DB, and `peers build`
-  starts no build. Fix the cause, then run again — retrying alone does not help.
+  the version file as it was, `prices update` and `flows update` call neither KIS nor the DB, and
+  `peers build` starts no build. Fix the cause, then run again — retrying alone does not help.
 - `1` Any other error; also a `failed` price run (more than 20 % of the stocks not received —
-  the snapshot is left as it was) and an `incomplete` peers build, a peers build refused because
-  tagging or another build is running, and `tag requeue --apply` refused because a backfill,
-  escalate, collect or web app runs on this PC (nothing changed; stop or wait for it, then run
-  again). `tag requeue` prints one line on stderr and nothing on stdout.
+  the snapshot is left as it was), a `failed` flows run (the same 20 % rule — no day is ranked), a
+  `--codes` check with a code not received, an `incomplete` peers build, and these refusals
+  (nothing changed; stop or wait for it, then run again): a flows update while a price update or
+  another flows update is running, a peers build while tagging or another build is running, and
+  `tag requeue --apply` while a backfill, escalate, collect or web app runs on this PC.
+  `tag requeue` prints one line on stderr and nothing on stdout.
 
 Every command: missing or wrong arguments print the usage and exit `2`; `--help` exits `0`.
 
@@ -157,6 +170,32 @@ powershell -File scripts\run-batches.ps1 -Iterations N -BatchSize 10
 - Ctrl+C is safe; starting it again continues with the remaining `pending` rows.
 - The script finds the repository's `.venv` Python itself; `-Python <path>` or
   `$env:RESEARCH_DESK_PY` override it.
+
+## Daily prices and investor flows
+
+The Windows Task Scheduler task `ResearchDesk-prices-update` runs `scripts\run-prices.ps1` on
+weekdays at 18:30 (registration and checks: [docs/operations.md](operations.md)):
+
+1. `prices update`: the price snapshot and the year of adjusted daily closes;
+2. `flows update`, only when the price update exits `0`. Otherwise the script prints one Korean
+   line saying it skips the flows update and exits with the price update's code. The next run
+   fills a skipped day's flows (each KIS answer brings 30 trading days), but that day is never
+   ranked: its market cap was not received.
+
+The script exits with the flows update's code when both ran, and `4` when it cannot find Python
+(`-Python <path>`, `$env:RESEARCH_DESK_PY`, then the repository's `.venv`). Both commands use the
+same KIS app key and access-token file (`KIS_TOKEN_CACHE`), so KIS is called in one time slot a
+day: do not run them again by hand on the same day, and keep them apart from the masterdb
+project's KIS collection. `FLOWS_MAX_CALLS_PER_SEC` (default 10) paces the flows update's KIS
+calls.
+
+**First fill.** Apply `migrations/009_investor_flows_price_history.sql` before the updated code
+first runs: without its tables both commands fail. The first `flows update` asks every stock back
+about 310 trading days — about 11 KIS calls a stock, roughly 28,000 calls for about 2,500 stocks
+at 10 calls a second — and the first price update after 009 writes each stock's year of closes,
+so expect an hour or more for the pair. Later days ask one call a stock (the calendar stock
+005930 about 11). The flows ranking's day list starts with the first run's day and grows by one
+day with each daily run; earlier days are never ranked, since KIS gives no past market caps.
 
 ## Stock list update
 
@@ -212,8 +251,15 @@ Python server; Vite proxies `/api` to port 8520.
   or one segment), with their broker report counts, the price reaction against the market and a
   highlight for candidates (no broker report, not yet risen); **테마로 기업 찾기** finds companies
   by a phrase such as "레거시 DRAM". Both need a published `peers build` and the price snapshot.
-- A status line on top of every screen shows the dates of the price snapshot and of the newest
-  report, in red with the reason when one is behind.
+- **수급 랭킹** ranks, for one ranked day, the stocks a chosen investor group bought (사모 by
+  default; 11 KRX groups) by the mean of two percentiles: how that day's net buying ranks among
+  the stock's last 250 trading days, and the net buying as a percent of that day's market cap.
+  It has a market-cap floor (default 1,000억), four sorts and the last 60 ranked days. On a
+  company page, the **수급** tab shows the 11 groups on the latest ranked day and a chart of one
+  group's daily net buying, its cumulative line and the adjusted close (1, 3 or 6 months, or 1
+  year). Both need `flows update` runs.
+- A status line on top of every screen shows the dates of the price snapshot, of the investor
+  flows and of the newest report, in red with the reason when one is behind.
 - Select any two reports for the same company and compare target prices,
   compatible estimates, investment theses and valuations; open both PDFs together.
 - Check any number of single-company reports and click **선택한 N건 분석**.
@@ -299,7 +345,7 @@ All Python code is one package, `research_desk/`:
 | `domain/` | Shared rules and reference data: report vocabulary, the in-scope rule, the stock list and its version |
 | `collector/` | Telegram channel → PDF files + `pending` rows in `reports` (`collect`) |
 | `tagger/` | `pending` rows → `auto` / `review_needed` with the LangGraph row graph (`tag`) |
-| `features/` | Research Desk features, one folder each: `companies` (company list, favorites), `reports` (company reports, PDF, analyze), `analysis` (one report's financial analysis), `compare` (two reports side by side), `coverage` (research coverage counts, broker report counts), `review` (manual review queue), `prices` (daily price snapshot, `prices update`), `peers` (yearly peers build, peers tab and theme search), `freshness` (the status line) |
+| `features/` | Research Desk features, one folder each: `companies` (company list, favorites), `reports` (company reports, PDF, analyze), `analysis` (one report's financial analysis), `compare` (two reports side by side), `coverage` (research coverage counts, broker report counts), `review` (manual review queue), `prices` (daily price snapshot and a year of adjusted closes, `prices update`), `peers` (yearly peers build, peers tab and theme search), `flows` (daily investor flows, `flows update`, the flows ranking and the company flows tab), `freshness` (the status line) |
 | `web/` | Web server assembly: security checks, error answers, screen files, the feature list (`web`) |
 | `tests/` | The architecture check |
 
@@ -327,6 +373,7 @@ MongoDB and KIS call and do not read your `.env`. The commit checks run the same
 
 - **"Missing required env var: X"** (`collect`) or **"X is required"** (`tag`, exit `4`) — Add the key to `.env`.
 - **"종목표 파일 내용이 버전 정보와 다릅니다…"** (`tag run` / `tag escalate`, exit `4`) — The stock list changed without a new version; see [Stock list update](#stock-list-update).
+- **"주가 갱신이 진행 중이라 수급 갱신을 시작하지 않았습니다…"** (`flows update`, exit `1`) — A price update is running, or one stopped less than 2 hours ago and left a `running` record. Wait for it to finish; a `running` record older than 2 hours is ignored.
 - **SMS code prompt every run** — The `sessions/samstudy.session` file is missing or got deleted. Telethon re-authenticates each time.
 - **Persistent failures in `failed_attempts`** — Check the `error_message` and `attempt_count` columns. If `attempt_count > 10` for a row, the message is likely permanently broken; manually inspect or DELETE the row to stop retrying.
 
