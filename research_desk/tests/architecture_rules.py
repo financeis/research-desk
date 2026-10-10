@@ -100,12 +100,19 @@ TABLE_OWNERS = {
     # 주가 스냅숏과 갱신 실행 기록
     "stock_price_snapshot": ("features/prices",),
     "price_update_runs": ("features/prices",),
+    # 수정 종가 일별 이력
+    "stock_price_daily": ("features/prices",),
     # 회사 프로필·사업 부문·임베딩과 유사 기업 계산 기록
     "company_profiles": ("features/peers",),
     "company_segments": ("features/peers",),
     "company_embeddings": ("features/peers",),
     "segment_embeddings": ("features/peers",),
     "peer_builds": ("features/peers",),
+    # 투자자별 일별 순매수·250일 순위, 수급 갱신 실행 기록, 순위를 매긴 날 목록, 종목별 수집 상태
+    "investor_flow_daily": ("features/flows",),
+    "investor_flow_runs": ("features/flows",),
+    "investor_flow_days": ("features/flows",),
+    "investor_flow_stocks": ("features/flows",),
 }
 # supabase-py opens a table with client.table('<표>') or its alias client.from_('<표>').
 _TABLE_METHODS = ("table", "from_")
