@@ -57,7 +57,7 @@
 | `settings.py` | KIS 설정. 계정 값은 `core.settings`의 공용 함수로 읽고, 기본 주소도 `core.settings.DEFAULT_KIS_BASE_URL`을 쓴다(이 값은 `core.kis.DEFAULT_BASE_URL`과 같은 값을 따로 적어 둔 것이다 — 설정 읽기가 KIS 클라이언트를 불러오지 않게; 테스트가 둘이 같은지 본다) |
 
 - `scripts/run-prices.ps1`은 저장소 폴더로 옮겨 `-Python` → `RESEARCH_DESK_PY` → 저장소의 `.venv` → 기본 작업 폴더의 `.venv` 순서로 파이썬을 찾고, `python -u -m research_desk prices update`를 돌린다. 그 종료 코드가 0이면 이어서 `flows update`를 돌려 그 코드로 끝나고, 0이 아니면 수급을 건너뛴다는 한 줄을 남기고 주가의 코드로 끝난다. 파이썬이 없으면 아무것도 돌리지 않고 4. PowerShell 5.1 문법, UTF-8(BOM 포함), 한국어 안내.
-- 조정 가능한 숫자(20%, 380일, 기간 거래일 수)는 `logic.py`·`jobs.py`의 상수다. `LOOKBACK_DAYS`는 받는 기간이자 이력을 남기는 기간이라, 줄이면 수급 탭 1년 그래프의 주가선 앞부분이 빈다.
+- 조정 가능한 숫자(20%, 380일, 기간 거래일 수)는 `logic.py`·`jobs.py`의 상수다. `LOOKBACK_DAYS`는 받는 기간이자 이력을 남기는 기간이라, 줄이면 수급 탭 1년 그래프의 주가선 앞부분이 빈다. 380일도 250거래일보다 조금 길 뿐이라, 연휴가 몰린 때(예: 2026년 1월 초)는 1년 그래프의 첫날 종가가 비어 선이 하루쯤 늦게 시작할 수 있다(그래프는 빈 종가에서 선을 끊는다).
 
 ## 테스트
 

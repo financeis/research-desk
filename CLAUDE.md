@@ -73,7 +73,7 @@ telegram_report/
 - **분류기(`research_desk/tagger`)나 백필을 건드리기 전:** `docs/operations.md`의 운영 원칙·자동 처리 사건 표, `docs/business-rules.md`의 상태 전이와 분류 규칙.
 - **DB 쿼리·표·마이그레이션을 건드리기 전:** `docs/standards.md`의 표 주인 규칙과 데이터 규칙, `docs/engineering-notes.md`의 "운영 DB 데이터 고치기" 점검표와 Supabase REST의 1000행 한도 함정.
 - **웹 주소나 응답을 건드리기 전:** `docs/contracts.md` — 화면이 그 모양에 그대로 의존한다.
-- **화면(`frontend/`)을 건드리기 전:** `frontend/AGENTS.md`와 `docs/contracts.md` — 화면이 서버 문장을 글자 그대로 비교하는 자리와 서버 값 목록의 사본(제외 사유, 등급·반응 표기)이 있다.
+- **화면(`frontend/`)을 건드리기 전:** `frontend/AGENTS.md`와 `docs/contracts.md` — 화면이 서버 문장을 글자 그대로 비교하는 자리와 서버 값 목록의 사본(제외 사유, 등급·반응 표기, 수급 주체 키·정렬·기간)이 있다.
 - **분류 체계 값(리포트 종류·사유·발행처 종류)이나 종목표를 바꾸기 전:** `docs/business-rules.md`의 값 집합과 종목표 버전 — DB 제약과 LLM 응답 모양을 함께 바꿔야 한다.
 - **발행처 사전(`research_desk/tagger/vocabulary/publishers.yaml`)을 고치기 전:** `docs/operations.md`의 "다시 분류 대기" — 사전 원문이 분류 AI 요청에 그대로 들어가므로 백필 중에는 고치지 않고, 고친 뒤 `tag requeue`로 해당 행을 다시 분류한다.
 - **호스트·출처 검사, PDF 내주기, 비밀 값을 건드리기 전:** `docs/security.md`.
