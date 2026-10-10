@@ -35,6 +35,18 @@ def test_the_default_address_is_the_kis_clients_real_service():
     assert settings.DEFAULT_KIS_BASE_URL == core_kis.DEFAULT_BASE_URL
 
 
+def test_the_kis_account_is_read_through_the_shared_core_settings(clean):
+    """Another feature reads the same KIS account: core.settings is the one place that reads it."""
+    clean.setattr(core_settings, "kis_app_key", lambda: "key from core")
+    clean.setattr(core_settings, "kis_app_secret", lambda: "secret from core")
+    clean.setattr(core_settings, "kis_base_url", lambda: "https://kis.example.invalid")
+    clean.setattr(core_settings, "kis_token_cache", lambda: "cache from core")
+    cfg = settings.load_settings()
+    assert (cfg.app_key, cfg.app_secret, cfg.base_url, cfg.token_cache) == (
+        "key from core", "secret from core", "https://kis.example.invalid", "cache from core")
+    assert settings.DEFAULT_KIS_BASE_URL == core_settings.DEFAULT_KIS_BASE_URL
+
+
 def test_values_from_the_environment(clean):
     clean.setenv("KIS_APP_KEY", APP_KEY)
     clean.setenv("KIS_APP_SECRET", APP_SECRET)

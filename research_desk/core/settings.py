@@ -170,6 +170,34 @@ def krx_csv_path() -> Path:
     return Path(optional("KRX_CSV_PATH", DEFAULT_KRX_CSV_PATH))
 
 
+# The KIS Open API account, the same for every feature that calls KIS. The address is the
+# same as core.kis.DEFAULT_BASE_URL, written here too so that reading the settings never
+# imports the KIS client (a test keeps the two equal).
+DEFAULT_KIS_BASE_URL = "https://openapi.koreainvestment.com:9443"  # 실전 서비스
+
+
+def kis_app_key() -> Optional[str]:
+    """``KIS_APP_KEY``: the 실전 account's app key; None when unset or empty."""
+    return _secret("KIS_APP_KEY")
+
+
+def kis_app_secret() -> Optional[str]:
+    """``KIS_APP_SECRET``: the 실전 account's app secret; None when unset or empty."""
+    return _secret("KIS_APP_SECRET")
+
+
+def kis_base_url() -> str:
+    """``KIS_BASE_URL``; the real service (``DEFAULT_KIS_BASE_URL``) when unset or empty."""
+    return optional("KIS_BASE_URL") or DEFAULT_KIS_BASE_URL
+
+
+def kis_token_cache() -> Optional[str]:
+    """``KIS_TOKEN_CACHE``: the access-token file shared with the user's other project that uses
+    the same app key (its format, see ``core.kis``); None when unset or empty (the token then
+    stays in memory and every run asks KIS for one)."""
+    return optional("KIS_TOKEN_CACHE") or None
+
+
 # ── feature not ready ────────────────────────────────────────────────────────
 
 class NotReady(Exception):

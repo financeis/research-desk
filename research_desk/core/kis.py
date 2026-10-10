@@ -1,4 +1,5 @@
-"""KIS (한국투자증권) Open API: adjusted daily prices and quotes of Korean stocks.
+"""KIS (한국투자증권) Open API: adjusted daily prices, quotes and daily trading by investor of
+Korean stocks.
 
 ``KisClient`` is synchronous. httpx is imported inside the methods, never at
 the top of this module: every command imports core when it starts, and only
@@ -60,6 +61,12 @@ QUOTE_TR_ID = "FHKST01010100"
 MARKET_CAP_UNIT = 100_000_000  # hts_avls (HTS 시가총액) is in 억원
 HALTED_STATUS = "58"  # iscd_stat_cls_code 58: 거래정지
 ADMIN_ISSUE_STATUS = "51"  # iscd_stat_cls_code 51: 관리종목
+
+# 종목별 투자자매매동향(일별) [국내주식 시세분석]: one call answers the 30 trading days ending at
+# FID_INPUT_DATE_1, newest first.
+INVESTOR_DAILY_PATH = "/uapi/domestic-stock/v1/quotations/investor-trade-by-stock-daily"
+INVESTOR_DAILY_TR_ID = "FHPTJ04160001"
+AMOUNT_SUFFIX = "pbmn"  # KIS names an amount field (대금) ..._pbmn
 
 RATE_LIMIT_CODE = "EGW00201"  # 초당 거래건수를 초과하였습니다.
 MAX_RETRIES = 3
@@ -158,8 +165,7 @@ class KisClient:
                 "FID_PERIOD_DIV_CODE": "D",  # daily
                 "FID_ORG_ADJ_PRC": "0",  # 0: 수정주가 (adjusted), 1: 원주가
             }, what=f"daily prices {code}")
-            page = [_daily_row(raw) for raw in body.get("output2") or []
-                    if str(raw.get("stck_bsop_date") or "").strip()]
+            page = [_daily_row(raw) for raw in _dated_rows(body)]
             rows.update((row["date"], row) for row in page if start <= row["date"] <= end)
             if len(page) < DAILY_PAGE_ROWS:
                 break
@@ -188,6 +194,27 @@ class KisClient:
             "halted": _yes(fields.get("temp_stop_yn")) or status == HALTED_STATUS,
             "admin_issue": _yes(fields.get("mang_issu_cls_code")) or status == ADMIN_ISSUE_STATUS,
         }
+
+    def investor_daily(self, code: str, anchor: date) -> list[dict]:
+        """Trading by investor of ``code``, a row a day: the 30 trading days ending at ``anchor``,
+        oldest first.
+
+        One call of 종목별 투자자매매동향(일별) (KRX). A row is ``{"date": date, "close": int | None,
+        <field>: int | None, ...}``: close is the day's 종가 (``stck_clpr``), and every field of
+        KIS's row whose name ends with ``pbmn`` (an amount, 대금, e.g. ``frgn_reg_ntby_pbmn``)
+        comes under its KIS name, as KIS gives it. Which field is which investor is not core's
+        business. A blank figure is None, a row without a date is left out and a repeated day
+        keeps its last row.
+        """
+        body = self._get(INVESTOR_DAILY_PATH, INVESTOR_DAILY_TR_ID, {
+            "FID_COND_MRKT_DIV_CODE": "J",  # KRX
+            "FID_INPUT_ISCD": code,
+            "FID_INPUT_DATE_1": anchor.strftime("%Y%m%d"),
+            "FID_ORG_ADJ_PRC": "",  # blank, as KIS asks
+            "FID_ETC_CLS_CODE": "",  # blank, as KIS asks
+        }, what=f"investor trading {code}")
+        rows = {row["date"]: row for row in map(_investor_row, _dated_rows(body))}
+        return [rows[day] for day in sorted(rows)]
 
     def close(self) -> None:
         """Close the HTTP connections."""
@@ -412,13 +439,29 @@ class KisClient:
         return text
 
 
+def _dated_rows(body: dict) -> list[dict]:
+    """The answer's output2 rows that have a business day (stck_bsop_date); blank rows are left out."""
+    return [raw for raw in body.get("output2") or [] if str(raw.get("stck_bsop_date") or "").strip()]
+
+
+def _day(raw: dict) -> date:
+    """A dated row's business day (stck_bsop_date, YYYYMMDD)."""
+    return datetime.strptime(str(raw["stck_bsop_date"]).strip(), "%Y%m%d").date()
+
+
 def _daily_row(raw: dict) -> dict:
     return {
-        "date": datetime.strptime(str(raw["stck_bsop_date"]).strip(), "%Y%m%d").date(),
+        "date": _day(raw),
         "close": _int(raw.get("stck_clpr")),
         "volume": _int(raw.get("acml_vol")),
         "trading_value": _int(raw.get("acml_tr_pbmn")),
     }
+
+
+def _investor_row(raw: dict) -> dict:
+    row = {"date": _day(raw), "close": _int(raw.get("stck_clpr"))}
+    row.update((name, _int(value)) for name, value in raw.items() if name.endswith(AMOUNT_SUFFIX))
+    return row
 
 
 def _int(value: Any) -> Optional[int]:
