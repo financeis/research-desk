@@ -25,8 +25,15 @@ names below. No web routes. Units: returns and excess returns are percent floats
 - ``latest_run()`` → ``{"last_run_at": datetime (aware, UTC; the latest run's start),
   "last_run_status": "running" | "ok" | "partial" | "failed", "as_of": date | None (the latest
   ok / partial run's data date)}``, or None when there has been no run.
+- ``daily_closes(codes, since)`` → ``{code: [{"date": "YYYY-MM-DD", "close": int}, …]}``: the
+  stored adjusted closes (수정 종가, whole won) of each code from ``since`` (a date or
+  ``YYYY-MM-DD``, that day included) on, oldest first. Only codes with such rows are in it (each
+  code once, in the order asked; codes that are not plain letters and digits match nothing; one
+  plain string instead of a collection is a TypeError, a ``since`` that is not a day a TypeError
+  or ValueError). A day without a row (a holiday, a halt the KIS series skips, before the
+  history) is simply absent. Read 1000 rows a request, a new query for each page.
 
-Both raise ``NotReady("주가", "DB 접속 설정(SUPABASE_URL, SUPABASE_SERVICE_KEY)이 없습니다")``
+All three raise ``NotReady("주가", "DB 접속 설정(SUPABASE_URL, SUPABASE_SERVICE_KEY)이 없습니다")``
 without DB settings (tried again on the next call).
 
 - ``register_jobs(subparsers)`` adds the command ``prices update [--codes 005930,080220]``
@@ -41,4 +48,4 @@ without DB settings (tried again on the next call).
 Importing this window loads no FastAPI, HTTP library, KIS client or MongoDB package.
 """
 from .jobs import register as register_jobs
-from .service import latest_run, snapshots
+from .service import daily_closes, latest_run, snapshots

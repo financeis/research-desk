@@ -5,7 +5,8 @@ the 1000-row limit), the full read of stored returns paged 1000 rows at a time w
 per page, run records (insert as running, finish, the latest run, the latest successful run),
 and the history (``stock_price_daily``): upserts in batches on (stock_code, trade_date) with
 nothing sent back, the stored closes on given days read day by day in chunks of codes, the
-delete of the rows before a day.
+delete of the rows before a day, the read of codes' rows from a day on (chunks of codes, 1000
+rows a page with a new query per page, by stock code then day).
 """
 from __future__ import annotations
 
@@ -221,3 +222,37 @@ def test_the_history_before_a_day_is_deleted_in_one_request_with_nothing_sent_ba
     [delete] = db.queries(store.HISTORY_TABLE, "delete")
     assert delete.filters == [("lt", "trade_date", day(1))] and delete.returning == "minimal"
     assert db.history() == {code(1): {day(1): 101}, code(2): {day(5): 8}}   # the day itself is kept
+
+
+def test_the_history_of_codes_from_a_day_is_read_1000_rows_a_page_with_a_new_query_for_each():
+    db = FakeSupabase(daily=[close_row(i, n, 1000 * i + n) for n in reversed(range(600)) for i in (2, 0, 1)])
+    rows = store.read_history(db, [code(2), code(0)], day(10))
+    assert [(row["stock_code"], row["trade_date"]) for row in rows] == (
+        [(code(0), day(n)) for n in range(10, 600)] + [(code(2), day(n)) for n in range(10, 600)])
+    assert rows[0] == {"stock_code": code(0), "trade_date": day(10), "close": 10}   # that day included
+    reads = db.queries(store.HISTORY_TABLE, "select")
+    assert [(q.offset, q.limit_n) for q in reads] == [(0, 1000), (1000, 1000)]   # 1180 rows
+    assert len({id(q) for q in reads}) == 2                                       # a new query for each page
+    assert all(q.orders == [("stock_code", False), ("trade_date", False)] for q in reads)
+    assert all(q.filter_values("gte", "trade_date") == [day(10)] for q in reads)
+    assert all(q.filter_values("in", "stock_code") == [[code(2), code(0)]] for q in reads)
+
+
+def test_a_full_last_history_page_is_followed_by_an_empty_one():
+    db = FakeSupabase(daily=[close_row(1, n, 5) for n in range(1000)])
+    assert len(store.read_history(db, [code(1)], day(0))) == 1000
+    assert len(db.queries(store.HISTORY_TABLE, "select")) == 2
+
+
+def test_the_history_is_read_200_codes_at_a_time():
+    db = FakeSupabase(daily=[close_row(i, 0, i) for i in range(450)])
+    rows = store.read_history(db, [code(i) for i in range(450)], day(0))
+    assert [row["stock_code"] for row in rows] == [code(i) for i in range(450)]
+    reads = db.queries(store.HISTORY_TABLE, "select")
+    assert [len(q.filter_values("in", "stock_code")[0]) for q in reads] == [200, 200, 50]
+
+
+def test_reading_the_history_of_no_codes_asks_nothing():
+    db = FakeSupabase(daily=[close_row(1, 0, 5)])
+    assert store.read_history(db, [], day(0)) == []
+    assert db.executed == []

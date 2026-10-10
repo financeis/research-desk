@@ -248,6 +248,11 @@ def price_view(row: Mapping[str, Any]) -> dict:
     }
 
 
+def close_view(row: Mapping[str, Any]) -> dict:
+    """A stored history row as the window gives it: ``{"date": "YYYY-MM-DD", "close": whole won}``."""
+    return {"date": iso_day(row["trade_date"]), "close": _whole(row["close"])}
+
+
 def wanted_codes(codes: Iterable[str]) -> list[str]:
     """Each code once, in the given order; codes that are not plain letters and digits are left
     out. One plain string is a TypeError (iterating it would ask for its characters)."""

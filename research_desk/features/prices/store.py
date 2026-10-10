@@ -15,8 +15,9 @@ dates as ``YYYY-MM-DD``, times as ISO text with an offset.
 - Reads by code ask ``CODES_PER_QUERY`` codes a request (a short request address; each answer is
   under Supabase's 1000-row limit). The stored closes on given days are read day by day, the
   same way. The full read of stored returns pages ``PAGE`` rows at a time in stock-code order,
-  with a new query for each page: postgrest-py's ``range()`` adds offset/limit to the query
-  instead of replacing them.
+  and so does the read of codes' history from a day on (``CODES_PER_QUERY`` codes at a time, by
+  stock code then day), with a new query for each page: postgrest-py's ``range()`` adds
+  offset/limit to the query instead of replacing them.
 - A run starts as ``running`` and is finished with its status, counts and message. "Latest" is the
   latest ``started_at``, then the higher ``run_id``.
 
@@ -132,6 +133,32 @@ def delete_history_before(sb, day: str) -> None:
     """Delete every history row with a trade_date before ``day`` (``YYYY-MM-DD``; that day is
     kept), one request, nothing sent back."""
     sb.table(HISTORY_TABLE).delete(returning=MINIMAL).lt("trade_date", day).execute()
+
+
+def read_history(sb, codes: Sequence[str], since: str) -> list[dict]:
+    """The stored history rows of ``codes`` (distinct) from ``since`` (``YYYY-MM-DD``, that day
+    included) on, by stock_code then trade_date: ``CODES_PER_QUERY`` codes at a time, each read
+    ``PAGE`` rows a request until a short page, with a new query for each page."""
+    codes = list(codes)
+    rows: list[dict] = []
+    for start in range(0, len(codes), CODES_PER_QUERY):
+        chunk = codes[start:start + CODES_PER_QUERY]
+        offset = 0
+        while True:
+            result = (sb.table(HISTORY_TABLE)
+                        .select(_columns(HISTORY_COLUMNS))
+                        .in_("stock_code", chunk)
+                        .gte("trade_date", since)
+                        .order("stock_code")
+                        .order("trade_date")
+                        .range(offset, offset + PAGE - 1)
+                        .execute())
+            page = result.data or []
+            rows.extend(page)
+            if len(page) < PAGE:
+                break
+            offset += PAGE
+    return rows
 
 
 # ── run records ──────────────────────────────────────────────────────────────
