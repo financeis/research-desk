@@ -240,3 +240,35 @@ def render_extraction_messages(
         {'role': 'system', 'content': _EXTRACTION_SYSTEM},
         {'role': 'user', 'content': user_payload},
     ]
+
+
+# Page-image request: said in place of the page text, the same for every request.
+PAGE_IMAGE_NOTE = (
+    "This PDF has no readable text layer, so its pages are attached as images "
+    "in the same order as the page markers below (the first image is the first "
+    "marker's page, the second image the second marker's page, and so on); read "
+    "the report from the attached images."
+)
+
+
+def render_page_image_messages(
+    report_metadata: dict[str, Any],
+    page_numbers: list[int],
+) -> list[dict[str, str]]:
+    """messages list (system + user) for a page-image extraction.
+
+    The system text is ``_EXTRACTION_SYSTEM`` unchanged (provider prompt cache)
+    and the metadata block is the text path's. In place of the page text come
+    ``PAGE_IMAGE_NOTE`` and one ``--- Page N ---`` line per attached image, in
+    attachment order; ``N`` is the image's physical PDF page (1-based). The
+    caller attaches the images in the same order.
+    """
+    markers = ''.join(f"--- Page {n} ---\n" for n in page_numbers)
+    user_payload = (
+        f"<report_metadata>\n{json.dumps(report_metadata, ensure_ascii=False, indent=2)}\n</report_metadata>\n\n"
+        f"<report_pages>\n{PAGE_IMAGE_NOTE}\n\n{markers}</report_pages>"
+    )
+    return [
+        {'role': 'system', 'content': _EXTRACTION_SYSTEM},
+        {'role': 'user', 'content': user_payload},
+    ]
