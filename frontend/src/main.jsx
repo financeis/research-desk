@@ -352,6 +352,7 @@ function App() {
       setAnalysisProgress({
         items: results.map((x) => ({ ...x })),
         running: true,
+        force,
       });
     publish();
     for (const item of results) {
@@ -377,6 +378,7 @@ function App() {
     setAnalysisProgress({
       items: results.map((x) => ({ ...x })),
       running: false,
+      force,
     });
     setBusy(null);
     runningAnalysis.current = false;
@@ -1191,6 +1193,7 @@ function App() {
             ))}
           </details>
           {!analysisProgress.running &&
+            !analysisProgress.force &&
             analysisProgress.items.some((x) => x.status === "error") && (
               <button
                 className="button secondary"
@@ -1339,9 +1342,12 @@ function ReportDetail({
               <button
                 className="button primary"
                 disabled={!!busy}
-                onClick={() => onAnalyze(r)}
+                onClick={() => {
+                  setPending("analyze");
+                  onAnalyze(r);
+                }}
               >
-                {busy === r.id ? (
+                {running && pending !== "delete" ? (
                   <>
                     <LoaderCircle size={14} className="spin" />
                     분석 중…
