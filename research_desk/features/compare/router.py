@@ -8,7 +8,9 @@
 
 404 ``기업 보고서를 찾을 수 없습니다.`` when either report is not an in-scope report; 422
 ``금융 비교는 단일종목 보고서 두 개를 선택해 주세요.`` / ``서로 다른 보고서 두 개를 선택해 주세요.`` /
-``같은 기업의 보고서를 선택해 주세요.``, and for the narrative ``선택한 두 보고서를 먼저 분석해 주세요.``.
+``같은 기업의 보고서를 선택해 주세요.``, and for the narrative ``선택한 두 보고서를 먼저 분석해 주세요.``
+and 409 ``선택한 보고서를 분석하거나 지우는 중입니다. 잠시 후 다시 시도해 주세요.`` (one of the two is
+being analyzed, deleted or used by another narrative).
 ``NotReady("리포트", …)`` (no DB settings) and ``NotReady("분석", …)`` (no model key or codex CLI,
 for a new narrative only) reach the web app, which answers 503. The handler names, parameters and
 body model (with no docstrings) match the old app, so these entries of ``/openapi.json`` stay the
