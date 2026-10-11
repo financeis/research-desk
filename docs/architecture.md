@@ -53,7 +53,9 @@ reports (auto / review_needed) ──(같은 직접 연결)──▶ tag requeue
 3. `features/reports` → `features/analysis.analyze_report(row, force)`: 같은 리포트가 바쁘면(분석·지우기·비교 해석문 만들기 중) 409 → 웹 서버 전체 AI 자리 2개 중 하나를 잡음 → 단일종목이 아니면 422 → (다시 분석이 아니면) 재무 상세가 있는 저장 결과가 있으면 그대로 반환 → 모델 키·codex CLI 확인(없으면 "분석 기능 사용 불가" 503) → `core.pdf`로 저장 폴더 안 PDF를 찾아 모든 쪽 글자를 뽑음 → 글자가 사실상 없는지 판정.
    - 글자 분석: `core.llm`으로 AI 호출(시간 한도 180초, 일시 오류면 5초 뒤 1회 재시도) → 숫자 근거 확인.
    - 그림 분석: `core.pdf`가 1~20쪽을 크기 한도 안의 그림으로 그림 → `core.llm`으로 그림을 붙여 AI 호출(시간 한도 360초, 시간 초과는 재시도 없음) → 빈 답이면 422 → 신뢰도 최대 medium.
-   → 이 리포트를 앞 문서로 삼은 다른 리포트의 비교 해석문을 비움 → `report_summaries`에 저장(`input_mode` 포함).
+
+   두 경우 모두 그다음 이 리포트를 앞 문서로 삼은 다른 리포트의 비교 해석문을 비우고 → `report_summaries`에 저장한다(`input_mode` 포함).
+
    분석 결과 지우기(`DELETE /api/reports/{rid}/analysis`)도 같은 길로 `analysis.delete_summary`에 가서 바쁨 확인 → 해석문 비우기 → 행 삭제를 한다(AI 자리·모델 키 없음).
 4. `features/reports`: 저장 결과를 붙인 리포트 공개 모양(`file_path` 없음) + `analysis_reused`를 돌려준다.
 
@@ -91,8 +93,8 @@ reports (auto / review_needed) ──(같은 직접 연결)──▶ tag requeue
 | `collector` | 텔레그램 → PDF + `pending` 행, 실패 기록 | `core`, `domain` |
 | `tagger` | `pending` → `auto`/`review_needed` (LangGraph 행 그래프), 발행처 사전과 조회(`tagger/vocabulary/`: `publishers.yaml` + 정식 이름·종류·파일 이름 표기 조회), 다시 분류 대기 명령 `tag requeue`(`tagger/requeue.py`) | `core`, `domain` |
 | `features/companies` | 기업 목록·관심 기업 | `core`, `domain` |
-| `features/analysis` | 리포트 1건 재무 분석, `report_summaries` 표, 웹 AI 자리 2개 | `core`, `domain` |
-| `features/reports` | 분류가 끝난 리포트 조회, 목록·PDF·분석 실행 주소. 다른 기능용으로 여러 종목 리포트 읽기, 가장 최근 리포트 시각, 분류 진행 확인 | `core`, `domain`, 기능 `analysis` |
+| `features/analysis` | 리포트 1건 재무 분석(글자 없는 PDF는 쪽 그림으로), 분석 결과 지우기, 분석·지우기·비교 해석문이 겹치지 않게 하는 바쁜 리포트 표시, `report_summaries` 표, 웹 AI 자리 2개 | `core`, `domain` |
+| `features/reports` | 분류가 끝난 리포트 조회, 목록·PDF·분석 실행(다시 분석)·분석 결과 지우기 주소. 다른 기능용으로 여러 종목 리포트 읽기, 가장 최근 리포트 시각, 분류 진행 확인 | `core`, `domain`, 기능 `analysis` |
 | `features/compare` | 두 보고서 비교 | `core`, `domain`, 기능 `reports`·`analysis` |
 | `features/coverage` | 커버리지 집계, 집계용 행 캐시, 종목별 증권사 리포트 수 세기 | `core`, `domain`, 기능 `reports` |
 | `features/review` | 수동 검토·되돌리기 | `core`, `domain`, 기능 `coverage` (처리 뒤 캐시 비우기) |
@@ -119,7 +121,7 @@ reports (auto / review_needed) ──(같은 직접 연결)──▶ tag requeue
 | `reports` | `features/review` | 검토 대기열 조회, 검토 결과 쓰기, 되돌리기 |
 | `reports` | `features/reports` | 분류가 끝난 리포트 조회(목록·상세·PDF·집계 재료·여러 종목 리포트·가장 최근 리포트), 분류 진행 중인 행 개수 |
 | `failed_attempts` | `collector` | 실패 기록·재시도·정리 |
-| `report_summaries` | `features/analysis` | 분석 결과 저장·조회, 비교 결과 저장 |
+| `report_summaries` | `features/analysis` | 분석 결과 저장·조회·지우기, 비교 결과 저장, 결과가 바뀌거나 지워진 리포트를 앞 문서로 삼은 비교 결과 비우기 |
 | `stock_price_snapshot`, `stock_price_daily`, `price_update_runs` | `features/prices` | 종목당 최신 주가 스냅샷 쓰기·읽기, 수정 종가 일별 이력(380일), 주가 갱신 실행 기록 |
 | `company_profiles`, `company_segments`, `company_embeddings`, `segment_embeddings`, `peer_builds` | `features/peers` | 회사별 사업 요약 카드와 사업부문, 임베딩 모델별 임베딩, 빌드 기록(백분위표·용어표) |
 | DB 함수 `match_company_profiles`, `match_company_segments` | `features/peers` | 질의 벡터와 가까운 회사 / 회사마다 가장 가까운 사업부문(정확 탐색, 최대 200행) |

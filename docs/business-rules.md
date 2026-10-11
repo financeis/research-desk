@@ -472,6 +472,7 @@
 | `taxonomy_version` | 종목표 버전 정보 파일의 `version` (`KRX@2026-05-08`) |
 | `report_summaries.summary_version` | `llm-summary@1.0` |
 | `report_summaries.prev_match_type` | `same_publisher`, `cross_publisher`, `none` (또는 비어 있음) |
+| `report_summaries.input_mode` | `text`, `page_image` (기본 `text`, 비어 있을 수 없음) |
 | `stock_price_snapshot.market` | `KOSPI`, `KOSDAQ` (또는 비어 있음) |
 | `stock_price_snapshot.flags` | `no_data`, `short_history`, `halted`, `admin_issue` 중 해당하는 것 (기본 빈 목록) |
 | `price_update_runs.status` | `running`, `ok`, `partial`, `failed` |
