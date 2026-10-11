@@ -53,7 +53,7 @@ def test_extraction_messages_shape():
     assert render_extraction_messages({}, '')[0] == system
 
 
-# ── page-image request (spec §3.3) ───────────────────────────────────────────
+# ── page-image request (business-rules 리포트 1건 재무 분석) ───────────────────────────────────────────
 
 METADATA = {'publisher': '삼성증권', 'stock_codes': ['005930'],
             'published_at': '2026-05-05', 'title': '반도체 업황 점검'}

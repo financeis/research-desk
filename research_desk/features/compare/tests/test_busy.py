@@ -1,4 +1,4 @@
-"""A narrative and the busy-report marker it shares with analysis and delete (spec §3.9, §5.3, §6).
+"""A narrative and the busy-report marker it shares with analysis and delete (business-rules 두 보고서 비교; contracts POST /api/compare/analyze).
 
 At the service level, with the reports window and the AI replaced (``world``, ``ai``); the marker
 is analysis' real one, through its window ``analysis.hold_reports``:

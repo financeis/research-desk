@@ -14,7 +14,7 @@ Checks (spec §4, §6, §9.5, §9.6, §9.9, §13 item 3):
   new narrative shows the analysis feature's name;
 - two real analyses calling the AI hold both slots, and a compare narrative waits for one (each
   analysis also clears the comparisons citing its report before saving);
-- the busy-report marker shared with the real analysis window (spec §3.9, §6): while a narrative
+- the busy-report marker shared with the real analysis window (business-rules 리포트 1건 재무 분석): while a narrative
   is made, an analysis or a delete of either report is 409 (analysis' text) and another narrative
   with one of them is 409 (compare's text); a narrative with a report being analyzed or deleted is
   409 at once; the marks are freed afterwards.
@@ -204,7 +204,7 @@ async def test_two_real_analyses_make_a_compare_narrative_wait(db, tmp_path, mon
     assert update.values('eq', 'report_id') == [3]
 
 
-# ── the busy-report marker shared with analysis (spec §3.9, §6) ─────────────
+# ── the busy-report marker shared with analysis (business-rules 리포트 1건 재무 분석) ─────────────
 
 async def test_while_a_narrative_is_made_its_reports_cannot_be_analyzed_or_deleted(db, monkeypatch):
     monkeypatch.setenv('OPENAI_API_KEY', 'sk-test')

@@ -61,7 +61,7 @@ def test_normalize_neither_forces_NA():
     assert out.target_price_dir == 'N/A'
 
 
-# ── page-image decision (spec §3.2) ───────────────────────────────────────────
+# ── page-image decision (business-rules 리포트 1건 재무 분석) ───────────────────────────────────────────
 # Whole document, averaged over every page: image path only when
 # Hangul avg < 50 AND Latin avg < 300 (exactly equal → text path).
 
@@ -135,7 +135,7 @@ def test_no_pages_is_not_images():
     assert needs_page_images([]) is False
 
 
-# ── empty image result (spec §3.4) and confidence cap (spec §3.3) ────────────
+# ── empty image result and confidence cap (business-rules 리포트 1건 재무 분석) ────────────
 
 def _metric():
     return FinancialMetric(

@@ -537,7 +537,7 @@ def test_analysis_errors_reach_the_browser_unchanged(client, db, analyze, error,
     ('', False), ('?force=false', False), ('?force=true', True),
 ], ids=['no force', 'force=false', 'force=true'])
 def test_force_is_handed_to_analysis(client, db, analyze, query, force):
-    # spec §3.6: force skips only analysis' reuse; without it (or false) nothing changes
+    # contracts POST /api/reports/{rid}/analyze: force skips only analysis' reuse; without it (or false) nothing changes
     db.tables['reports'] = [tagged(1)]
     response = client.post(f'/api/reports/1/analyze{query}')
     assert response.status_code == 200
@@ -635,7 +635,7 @@ def test_an_analysis_can_be_deleted_whatever_the_report_type(client, db, delete,
                                  tagged(1, status='verified', reason='foreign')],
                          ids=['no row', 'not final', 'pending', 'out of scope'])
 def test_deleting_a_missing_report_is_404_before_analysis(client, db, delete, row):
-    # spec §3.7 step 1: the row is checked first (404), even when analysis would answer 409
+    # contracts DELETE /api/reports/{rid}/analysis: the row is checked first (404), even when analysis would answer 409
     delete.error = HTTPException(409, IN_FLIGHT)
     db.tables['reports'] = [row] if row else []
     response = client.delete('/api/reports/1/analysis')

@@ -13,7 +13,7 @@ New (spec §6, §9.6, §9.9):
 - POST needs both analyses (422), gives back a narrative saved for exactly this pair without the
   AI or a key, and otherwise writes, saves and returns a new one;
 - POST with a report marked busy (being analyzed or deleted) is 409 with compare's text, while
-  GET still answers (spec §3.9, §5.3);
+  GET still answers (contracts POST /api/compare/analyze);
 - NotReady from the reports window or from analysis.phase2_llm → 503 with that feature's name.
 """
 from __future__ import annotations
