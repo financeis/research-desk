@@ -17,13 +17,16 @@ import {
   FileText,
   Layers3,
   LoaderCircle,
+  ImageIcon,
   PanelRightClose,
   Plus,
+  RotateCcw,
   Search,
   SlidersHorizontal,
   Sparkles,
   Star,
   Telescope,
+  Trash2,
   X,
 } from "lucide-react";
 import "./theme.css";
@@ -37,6 +40,8 @@ import ThemeSearch from "./peers/ThemeSearch";
 import StatusLine from "./freshness/StatusLine";
 import FlowRanking from "./flows/FlowRanking";
 import FlowTab from "./flows/FlowTab";
+
+const IMAGE_READ_NOTE = "그림으로 읽음 · 숫자 원문 대조 안 됨";
 
 const number = (value) =>
   value == null
@@ -316,7 +321,19 @@ function App() {
       setToast(e.message);
     }
   }
-  async function runAnalysis(rows) {
+  function replaceReport(updated) {
+    setData((previous) =>
+      previous?.reports.some((x) => x.id === updated.id)
+        ? {
+            ...previous,
+            reports: previous.reports.map((x) =>
+              x.id === updated.id ? updated : x,
+            ),
+          }
+        : previous,
+    );
+  }
+  async function runAnalysis(rows, { force = false } = {}) {
     if (runningAnalysis.current || !rows.length) return;
     const chosen = rows.filter((r) => r.report_type === "단일종목");
     if (!chosen.length) {
@@ -342,20 +359,12 @@ function App() {
       item.status = "running";
       publish();
       try {
-        const updated = await api(`/reports/${item.id}/analyze`, {
-          method: "POST",
-        });
-        item.status = updated.analysis_reused ? "cached" : "done";
-        setData((previous) =>
-          previous?.reports.some((x) => x.id === updated.id)
-            ? {
-                ...previous,
-                reports: previous.reports.map((x) =>
-                  x.id === updated.id ? updated : x,
-                ),
-              }
-            : previous,
+        const updated = await api(
+          `/reports/${item.id}/analyze${force ? "?force=true" : ""}`,
+          { method: "POST" },
         );
+        item.status = updated.analysis_reused ? "cached" : "done";
+        replaceReport(updated);
       } catch (e) {
         item.status = "error";
         item.error = e.message;
@@ -373,6 +382,22 @@ function App() {
     runningAnalysis.current = false;
   }
   const analyze = (r) => runAnalysis([r]);
+  const reanalyze = (r) => runAnalysis([r], { force: true });
+  async function deleteAnalysis(r) {
+    if (runningAnalysis.current) return;
+    runningAnalysis.current = true;
+    setBusy(r.id);
+    try {
+      replaceReport(
+        await api(`/reports/${r.id}/analysis`, { method: "DELETE" }),
+      );
+    } catch (e) {
+      setToast(e.message);
+    } finally {
+      setBusy(null);
+      runningAnalysis.current = false;
+    }
+  }
   const chosenReports = reports.filter((r) => selected.includes(r.id));
   const analyzableChosen = chosenReports.filter(
     (r) => r.report_type === "단일종목",
@@ -990,6 +1015,8 @@ function App() {
                           report={current}
                           onClose={() => setFocused(null)}
                           onAnalyze={analyze}
+                          onReanalyze={reanalyze}
+                          onDelete={deleteAnalysis}
                           busy={busy}
                           onToggle={() => toggleReport(current.id)}
                           selected={selected.includes(current.id)}
@@ -1215,13 +1242,19 @@ function ReportDetail({
   report: r,
   onClose,
   onAnalyze,
+  onReanalyze,
+  onDelete,
   busy,
   onToggle,
   selected,
 }) {
   const [tab, setTab] = useState("summary");
+  const [confirming, setConfirming] = useState(null);
+  const [pending, setPending] = useState(null);
   const s = r.summary,
-    f = details(r);
+    f = details(r),
+    imageRead = s?.input_mode === "page_image",
+    running = busy === r.id;
   return (
     <aside className="detail-panel panel" key={r.id}>
       <div className="detail-top">
@@ -1396,10 +1429,79 @@ function ReportDetail({
                   개 제외
                 </p>
               )}
+              {imageRead && <p>{IMAGE_READ_NOTE}</p>}
             </details>
+            {imageRead && (
+              <p className="image-read-note">
+                <ImageIcon size={13} />
+                {IMAGE_READ_NOTE}
+              </p>
+            )}
             <p className="model-note">
               {s.llm_model || "AI"} 분석 · 근거와 원문을 함께 확인하세요.
             </p>
+            {confirming ? (
+              <div className="analysis-confirm" role="alertdialog">
+                <p>
+                  {confirming === "delete"
+                    ? "이 리포트의 분석 결과와, 이 리포트를 기준으로 만든 비교 해석문을 지웁니다. 되돌릴 수 없습니다."
+                    : "기존 결과를 새 결과로 바꾸고, 이 리포트를 기준으로 만든 비교 해석문도 지웁니다. 새 결과가 나오지 않으면 기존 결과는 그대로입니다. 계속할까요?"}
+                </p>
+                <div>
+                  <button
+                    className="button primary"
+                    disabled={!!busy}
+                    onClick={() => {
+                      const action = confirming;
+                      setConfirming(null);
+                      setPending(action);
+                      (action === "delete" ? onDelete : onReanalyze)(r);
+                    }}
+                  >
+                    {confirming === "delete" ? "지우기" : "다시 분석"}
+                  </button>
+                  <button
+                    className="button secondary"
+                    onClick={() => setConfirming(null)}
+                  >
+                    취소
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="analysis-manage">
+                {f && (
+                  <button
+                    className="button secondary"
+                    disabled={!!busy}
+                    onClick={() => setConfirming("reanalyze")}
+                  >
+                    {running && pending === "reanalyze" ? (
+                      <LoaderCircle size={13} className="spin" />
+                    ) : (
+                      <RotateCcw size={13} />
+                    )}
+                    {running && pending === "reanalyze"
+                      ? "다시 분석 중…"
+                      : "다시 분석"}
+                  </button>
+                )}
+                <button
+                  className="button secondary"
+                  disabled={!!busy}
+                  onClick={() => setConfirming("delete")}
+                >
+                  {running && pending === "delete" ? (
+                    <LoaderCircle size={13} className="spin" />
+                  ) : (
+                    <Trash2 size={13} />
+                  )}
+                  {running && pending === "delete"
+                    ? "지우는 중…"
+                    : "분석 결과 지우기"}
+                </button>
+              </div>
+            )}
           </>
         )}
       </div>
@@ -1656,6 +1758,12 @@ function Comparison({ ids, reports, onBack, onChange, onAnalyze, busy }) {
               {r.summary?.one_line_summary ||
                 "아직 분석되지 않은 보고서입니다."}
             </p>
+            {r.summary?.input_mode === "page_image" && (
+              <p className="image-read-note">
+                <ImageIcon size={13} />
+                {IMAGE_READ_NOTE}
+              </p>
+            )}
             <div className="compare-values">
               <div>
                 <span>목표주가</span>
