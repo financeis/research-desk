@@ -8,7 +8,7 @@
 - ``FakeAI``: ``analysis.phase2_llm`` handing out a client whose ``parse`` records each call and
   answers a DiffResult (optionally held by a gate, failing, or refusing).
 - ``FakeSupabase``: an in-memory supabase-py client for the real reports and analysis windows
-  (select / update / upsert with eq, in_ and is_('null')).
+  (select / update / upsert / delete with eq, neq, in_ and is_('null')).
 - ``until`` / ``never``: wait on a condition by wall-clock time, not by loop ticks.
 - ``build_app``: this feature's router plus the NotReady → 503 answer the web app adds.
 """
@@ -186,8 +186,16 @@ class FakeQuery:
         self.kind, self.payload, self.on_conflict = 'upsert', deepcopy(payload), on_conflict
         return self
 
+    def delete(self) -> "FakeQuery":
+        self.kind = 'delete'
+        return self
+
     def eq(self, column: str, value: Any) -> "FakeQuery":
         self.filters.append(('eq', column, value))
+        return self
+
+    def neq(self, column: str, value: Any) -> "FakeQuery":
+        self.filters.append(('neq', column, value))
         return self
 
     def in_(self, column: str, values) -> "FakeQuery":
@@ -207,10 +215,12 @@ class FakeQuery:
             cell = row.get(column)
             if operator == 'is':
                 ok = cell is None
-            elif cell is None:
+            elif cell is None:   # like SQL: NULL passes neither = nor <> nor IN
                 ok = False
             elif operator == 'eq':
                 ok = cell == value
+            elif operator == 'neq':
+                ok = cell != value
             else:  # in
                 ok = cell in value
             if not ok:
@@ -239,6 +249,9 @@ class FakeQuery:
         if self.kind == 'update':
             for row in matched:
                 row.update(deepcopy(self.payload))
+            return SimpleNamespace(data=[deepcopy(row) for row in matched])
+        if self.kind == 'delete':
+            rows[:] = [row for row in rows if not self._passes(row)]
             return SimpleNamespace(data=[deepcopy(row) for row in matched])
         return SimpleNamespace(data=[self._shape(row) for row in matched])
 

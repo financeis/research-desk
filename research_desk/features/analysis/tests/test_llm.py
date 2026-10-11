@@ -3,6 +3,8 @@
 Ported from the extract tests of langgraph_tagger/analytics/llm_summary/tests/test_llm.py
 (the diff tests moved with diff_one to compare), plus the real ExtractionResult
 schema run through core.llm's unconstrained Anthropic path and Codex strict schema.
+New: the page-image request (same system text, images attached in marker order) and
+``retry_timeouts=False`` (a timeout is not tried again; other transient errors are).
 """
 import asyncio
 import json
@@ -14,7 +16,9 @@ import pytest
 from research_desk.core import llm as core_llm
 from research_desk.core.llm import LLMClient, StructuredResult, TransientLLMError
 from research_desk.features.analysis.llm import extract_one
-from research_desk.features.analysis.prompts import render_extraction_messages
+from research_desk.features.analysis.prompts import (
+    render_extraction_messages, render_page_image_messages,
+)
 from research_desk.features.analysis.schemas import ExtractionResult
 
 
@@ -182,6 +186,7 @@ async def test_extract_one_passes_system_and_user_to_client():
     assert '<report_pages>' not in kwargs['system']
     system, user = render_extraction_messages({'publisher': 'X'}, '--- Page 1 ---\nbody')
     assert (kwargs['system'], kwargs['user']) == (system['content'], user['content'])
+    assert 'images' not in kwargs   # the text request is today's, unchanged
 
 
 async def test_extract_one_refusal_raises():
@@ -192,6 +197,135 @@ async def test_extract_one_refusal_raises():
             client=fake, model='claude-haiku-5-5',
             metadata={}, pages_text='', timeout_s=10,
         )
+
+
+# ── page images (the image path) ─────────────────────────────────────────────
+
+PAGES = [(1, b'png-1'), (3, b'png-3')]
+
+
+async def test_extract_one_sends_page_images_with_the_page_image_prompt():
+    fake = AsyncMock()
+    fake.parse = AsyncMock(return_value=_fake_result(_valid_extraction_obj()))
+    r, tokens_in, tokens_out = await extract_one(
+        client=fake, model='claude-haiku-5-5', metadata={'publisher': 'X'},
+        page_images=PAGES, timeout_s=10, retry_timeouts=False,
+    )
+    assert isinstance(r, ExtractionResult) and (tokens_in, tokens_out) == (1000, 200)
+    kwargs = fake.parse.call_args.kwargs
+    system, user = render_page_image_messages({'publisher': 'X'}, [1, 3])
+    assert (kwargs['system'], kwargs['user']) == (system['content'], user['content'])
+    # the same system message as the text request
+    assert kwargs['system'] == render_extraction_messages({'publisher': 'X'}, '')[0]['content']
+    assert kwargs['images'] == [b'png-1', b'png-3']   # in marker order
+    assert kwargs['schema'] is ExtractionResult and kwargs['constrained'] is False
+
+
+async def test_extract_one_needs_a_page_image_on_the_image_path():
+    fake = AsyncMock()
+    with pytest.raises(ValueError):
+        await extract_one(client=fake, model='claude-haiku-5-5', metadata={}, page_images=[],
+                          timeout_s=10)
+    fake.parse.assert_not_called()
+
+
+async def test_extract_one_without_timeout_retry_does_not_try_a_timeout_again():
+    calls = []
+
+    async def slow(**kwargs):
+        calls.append(1)
+        await asyncio.sleep(0.05)   # longer than the 0.01s limit
+        return _fake_result(_valid_extraction_obj())
+
+    fake = AsyncMock()
+    fake.parse = slow
+    with pytest.raises(TimeoutError) as exc:
+        await extract_one(client=fake, model='gpt-5.4-mini', metadata={}, page_images=PAGES,
+                          timeout_s=0.01, backoff_s=0, retry_timeouts=False)
+    assert not isinstance(exc.value, TransientLLMError)
+    assert calls == [1]
+
+
+async def test_extract_one_without_timeout_retry_still_retries_other_transient_errors(monkeypatch):
+    sleeps = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(core_llm.asyncio, 'sleep', fake_sleep)
+    results = [TransientLLMError('rate limit'), _fake_result(_valid_extraction_obj())]
+
+    async def parse(**kwargs):
+        item = results.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    fake = AsyncMock()
+    fake.parse = parse
+    r, _, _ = await extract_one(client=fake, model='gpt-5.4-mini', metadata={}, page_images=PAGES,
+                                timeout_s=10, retry_timeouts=False)
+    assert isinstance(r, ExtractionResult)
+    assert results == [] and sleeps == [5.0]   # once more, after 5 seconds
+
+
+async def test_extract_one_without_timeout_retry_stops_after_two_transient_errors():
+    calls = []
+
+    async def always_fail(**kwargs):
+        calls.append(1)
+        raise TransientLLMError('persistent')
+
+    fake = AsyncMock()
+    fake.parse = always_fail
+    with pytest.raises(TransientLLMError):
+        await extract_one(client=fake, model='gpt-5.4-mini', metadata={}, page_images=PAGES,
+                          timeout_s=10, backoff_s=0, retry_timeouts=False)
+    assert len(calls) == 2
+
+
+async def test_extract_one_a_timeout_on_the_retry_is_that_timeout():
+    calls = []
+
+    async def flaky_then_slow(**kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            raise TransientLLMError('rate limit')
+        await asyncio.sleep(0.05)
+        return _fake_result(_valid_extraction_obj())
+
+    fake = AsyncMock()
+    fake.parse = flaky_then_slow
+    with pytest.raises(TimeoutError):
+        await extract_one(client=fake, model='gpt-5.4-mini', metadata={}, page_images=PAGES,
+                          timeout_s=0.01, backoff_s=0, retry_timeouts=False)
+    assert len(calls) == 2
+
+
+async def test_page_images_through_the_unconstrained_anthropic_path():
+    expected = _valid_extraction_obj()
+    reply = SimpleNamespace(
+        content=[SimpleNamespace(type='text', text=expected.model_dump_json())],
+        stop_reason='end_turn', stop_details=None,
+        usage=SimpleNamespace(input_tokens=10, output_tokens=20,
+                              cache_creation_input_tokens=0, cache_read_input_tokens=0),
+    )
+    client = LLMClient(anthropic_api_key='sk-ant-test', effort='low')
+    client._anthropic = MagicMock()
+    client._anthropic.messages.create = AsyncMock(return_value=reply)
+
+    result, _, _ = await extract_one(client=client, model='claude-haiku-5-5', metadata={},
+                                     page_images=PAGES, timeout_s=10, retry_timeouts=False)
+
+    assert result == expected
+    kwargs = client._anthropic.messages.create.call_args.kwargs
+    (message,) = kwargs['messages']
+    images, text = message['content'][:2], message['content'][2]
+    assert [block['type'] for block in images] == ['image', 'image']
+    assert text == {'type': 'text',
+                    'text': render_page_image_messages({}, [1, 3])[1]['content']}
+    prompt = render_extraction_messages({}, '')[0]['content']
+    assert kwargs['system'][0]['text'].startswith(f'{prompt}\n\n<output_format>')
 
 
 # ── the real schema through core.llm's provider paths ────────────────────────

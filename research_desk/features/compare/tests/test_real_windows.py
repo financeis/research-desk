@@ -12,7 +12,8 @@ Checks (spec §4, §6, §9.5, §9.6, §9.9, §13 item 3):
   with exactly the four comparison fields; it then shows for that pair and is not written again;
 - without DB settings both addresses show the reports feature's name; without a model key only a
   new narrative shows the analysis feature's name;
-- two real analyses calling the AI hold both slots, and a compare narrative waits for one.
+- two real analyses calling the AI hold both slots, and a compare narrative waits for one (each
+  analysis also clears the comparisons citing its report before saving).
 """
 from __future__ import annotations
 
@@ -36,6 +37,8 @@ URL, KEY = 'https://example.supabase.test', 'service-key'
 LIMIT_S = 5
 KEY_REASON = 'OPENAI_API_KEY가 설정되지 않았습니다. .env에 추가 후 분석 다시 시도하세요.'
 DB_REASON = 'DB 접속 설정(SUPABASE_URL, SUPABASE_SERVICE_KEY)이 없습니다'
+# Enough Latin letters (330, no digits) for analysis to read the PDF's text, not page images.
+FILLER = '\n'.join(['The analyst keeps the rating and explains the outlook for the company in detail.'] * 5)
 # the smallest ExtractionResult the analysis accepts
 EXTRACTION = {'target_price_dir': 'N/A', 'recommendation': '매수', 'recommendation_dir': '유지',
               'one_line_summary': '분석 결과', 'positive_points': [], 'risk_points': [],
@@ -67,7 +70,8 @@ def client():
 
 
 def summary_reads(db: FakeSupabase) -> list:
-    return [q.values('in', 'report_id')[0] for q in db.queries('report_summaries')]
+    return [q.values('in', 'report_id')[0] for q in db.queries('report_summaries')
+            if q.values('in', 'report_id')]
 
 
 def test_the_comparison_and_its_narrative_end_to_end(db, client, monkeypatch):
@@ -142,7 +146,7 @@ async def test_two_real_analyses_make_a_compare_narrative_wait(db, tmp_path, mon
     monkeypatch.setenv('STORAGE_BASE_DIR', str(storage))
     monkeypatch.setenv('OPENAI_API_KEY', 'sk-test')
     with pymupdf.open() as doc:
-        doc.new_page().insert_text((72, 72), 'Target 85,000')
+        doc.new_page().insert_text((72, 72), f'Target 85,000\n{FILLER}')
         doc.save(str(storage / 'new.pdf'))
     db.tables['reports'] = [tagged(1, '2026-02-09'), tagged(3, '2026-05-11')]
     db.tables['report_summaries'] = [analysed(1, 70000), analysed(3, 85000)]
@@ -178,5 +182,9 @@ async def test_two_real_analyses_make_a_compare_narrative_wait(db, tmp_path, mon
     assert [reused for _, reused in done] == [False, False]
     assert calls == ['ExtractionResult', 'ExtractionResult', 'DiffResult']
     assert state['peak'] == 2
-    (update,) = db.queries('report_summaries', 'update')
+    updates = db.queries('report_summaries', 'update')
+    # each analysis cleared the comparisons citing its report; the narrative went on report 3
+    assert sorted(q.values('eq', 'prev_report_id') for q in updates
+                  if q.values('neq', 'report_id')) == [[21], [22]]
+    (update,) = [q for q in updates if q.values('eq', 'report_id')]
     assert update.values('eq', 'report_id') == [3]
