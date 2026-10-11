@@ -1161,7 +1161,9 @@ function App() {
             }{" "}
             · 실패{" "}
             {analysisProgress.items.filter((x) => x.status === "error").length}{" "}
-            · 기존 상세 분석은 재사용합니다.
+            {analysisProgress.force
+              ? "· 기존 결과는 새 결과가 나올 때만 바뀝니다."
+              : "· 기존 상세 분석은 재사용합니다."}
           </p>
           <progress
             value={
