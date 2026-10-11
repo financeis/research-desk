@@ -195,7 +195,8 @@ async def test_a_new_narrative_waits_while_two_analyses_hold_the_slots(world, ai
     holders = [asyncio.create_task(analysis_ai_call()) for _ in range(2)]
     await until(lambda: len(holding) == 2)
     task = asyncio.create_task(service.analyze_comparison(1, 3))
-    await until(lambda: world.reads == [1, 3])   # the reports are read without a slot
+    # the reports are read without a slot: for the shape checks, then again once both are held
+    await until(lambda: world.reads == [1, 3, 1, 3])
     # no free slot: neither the key check (phase2_llm) nor the AI call happens
     await never(lambda: ai.prepared or ai.calls or task.done())
     release.set()
@@ -206,11 +207,13 @@ async def test_a_new_narrative_waits_while_two_analyses_hold_the_slots(world, ai
 
 
 async def test_three_narratives_at_once_run_two_at_a_time(world, ai):
+    # three pairs without a shared report (a shared one would be busy: 409, see test_busy.py)
     pair(world)
-    for rid, day in ((5, '2026-06-01'), (7, '2026-07-01')):
+    for rid, day in ((5, '2026-06-01'), (7, '2026-07-01'), (9, '2026-08-01'), (11, '2026-09-01')):
         world.add(tagged(rid, day), analysed(rid, 90000))
     ai.gate = asyncio.Event()
-    tasks = [asyncio.create_task(service.analyze_comparison(1, rid)) for rid in (3, 5, 7)]
+    tasks = [asyncio.create_task(service.analyze_comparison(left, right))
+             for left, right in ((1, 3), (5, 7), (9, 11))]
     await until(lambda: len(ai.calls) == 2)
     await never(lambda: len(ai.calls) > 2)
     assert ai.prepared == 2   # the third one waits for a slot before checking the key

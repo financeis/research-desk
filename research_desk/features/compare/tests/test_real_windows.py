@@ -13,14 +13,20 @@ Checks (spec §4, §6, §9.5, §9.6, §9.9, §13 item 3):
 - without DB settings both addresses show the reports feature's name; without a model key only a
   new narrative shows the analysis feature's name;
 - two real analyses calling the AI hold both slots, and a compare narrative waits for one (each
-  analysis also clears the comparisons citing its report before saving).
+  analysis also clears the comparisons citing its report before saving);
+- the busy-report marker shared with the real analysis window (spec §3.9, §6): while a narrative
+  is made, an analysis or a delete of either report is 409 (analysis' text) and another narrative
+  with one of them is 409 (compare's text); a narrative with a report being analyzed or deleted is
+  409 at once; the marks are freed afterwards.
 """
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import pymupdf
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from research_desk.core import db as core_db
@@ -31,7 +37,8 @@ from research_desk.features.compare import service as compare_service
 from research_desk.features.compare.schemas import DiffResult
 from research_desk.features.reports import service as reports_service
 
-from .fakes import REPORT_NOT_FOUND, FakeSupabase, analysed, build_app, metric, never, tagged, until
+from .fakes import (BUSY, IN_FLIGHT, REPORT_NOT_FOUND, FakeSupabase, analysed, build_app, metric,
+                    never, reports_are_free, tagged, until)
 
 URL, KEY = 'https://example.supabase.test', 'service-key'
 LIMIT_S = 5
@@ -43,6 +50,7 @@ FILLER = '\n'.join(['The analyst keeps the rating and explains the outlook for t
 EXTRACTION = {'target_price_dir': 'N/A', 'recommendation': '매수', 'recommendation_dir': '유지',
               'one_line_summary': '분석 결과', 'positive_points': [], 'risk_points': [],
               'extraction_confidence': 'high'}
+NOT_ANALYZED = '선택한 두 보고서를 먼저 분석해 주세요.'
 
 
 @pytest.fixture
@@ -67,6 +75,12 @@ def db(fresh_windows, monkeypatch) -> FakeSupabase:
 def client():
     with TestClient(build_app()) as test_client:
         yield test_client
+
+
+async def refused(coroutine) -> HTTPException:
+    with pytest.raises(HTTPException) as exc:
+        await asyncio.wait_for(coroutine, LIMIT_S)
+    return exc.value
 
 
 def summary_reads(db: FakeSupabase) -> list:
@@ -188,3 +202,121 @@ async def test_two_real_analyses_make_a_compare_narrative_wait(db, tmp_path, mon
                   if q.values('neq', 'report_id')) == [[21], [22]]
     (update,) = [q for q in updates if q.values('eq', 'report_id')]
     assert update.values('eq', 'report_id') == [3]
+
+
+# ── the busy-report marker shared with analysis (spec §3.9, §6) ─────────────
+
+async def test_while_a_narrative_is_made_its_reports_cannot_be_analyzed_or_deleted(db, monkeypatch):
+    monkeypatch.setenv('OPENAI_API_KEY', 'sk-test')
+    db.tables['reports'] = [tagged(1, '2026-02-09'), tagged(3, '2026-05-11'),
+                            tagged(5, '2026-06-01')]
+    db.tables['report_summaries'] = [analysed(1, 70000), analysed(3, 85000), analysed(5, 90000)]
+    gate, calls = asyncio.Event(), []
+
+    async def parse(self, **kwargs):
+        calls.append(kwargs['schema'].__name__)
+        await gate.wait()
+        return StructuredResult(parsed=DiffResult(diff_narrative='두 분석 그대로 작성'))
+
+    monkeypatch.setattr(LLMClient, 'parse', parse)
+    narrative = asyncio.create_task(compare_service.analyze_comparison(1, 3))
+    try:
+        await until(lambda: calls == ['DiffResult'])
+        for rid, published in ((1, '2026-02-09'), (3, '2026-05-11')):
+            for request in (analysis.analyze_report(tagged(rid, published)),
+                            analysis.analyze_report(tagged(rid, published), force=True),
+                            analysis.delete_summary(rid)):
+                error = await refused(request)
+                assert (error.status_code, error.detail) == (409, IN_FLIGHT)
+        for left, right in ((3, 1), (1, 5), (5, 3)):
+            error = await refused(compare_service.analyze_comparison(left, right))
+            assert (error.status_code, error.detail) == (409, BUSY)
+        # nothing was analyzed, deleted, cleared or saved meanwhile
+        assert calls == ['DiffResult']
+        assert db.queries('report_summaries', 'update') == []
+        assert db.queries('report_summaries', 'delete') == []
+        assert db.queries('report_summaries', 'upsert') == []
+        await reports_are_free(5)   # the refused narratives left report 5 unmarked
+    finally:
+        gate.set()
+    result = await asyncio.wait_for(narrative, LIMIT_S)
+    assert result['narrative'] == '두 분석 그대로 작성'
+    (update,) = db.queries('report_summaries', 'update')
+    assert update.values('eq', 'report_id') == [3]
+    # both are free again: report 1's result can be deleted (which clears the narrative citing it)
+    await reports_are_free(1, 3, 5)
+    await asyncio.wait_for(analysis.delete_summary(1), LIMIT_S)
+    assert [row['report_id'] for row in db.tables['report_summaries']] == [3, 5]
+    assert db.tables['report_summaries'][0]['diff_narrative'] is None
+
+
+async def test_a_narrative_with_a_report_being_analyzed_is_409(db, tmp_path, monkeypatch):
+    storage = tmp_path / 'reports'
+    storage.mkdir()
+    monkeypatch.setenv('STORAGE_BASE_DIR', str(storage))
+    monkeypatch.setenv('OPENAI_API_KEY', 'sk-test')
+    with pymupdf.open() as doc:
+        doc.new_page().insert_text((72, 72), f'Target 85,000\n{FILLER}')
+        doc.save(str(storage / 'new.pdf'))
+    db.tables['reports'] = [tagged(1, '2026-02-09') | {'file_path': 'new.pdf'},
+                            tagged(3, '2026-05-11')]
+    db.tables['report_summaries'] = [analysed(1, 70000), analysed(3, 85000)]
+    gate, calls = asyncio.Event(), []
+
+    async def parse(self, **kwargs):
+        schema = kwargs['schema']
+        calls.append(schema.__name__)
+        if schema is DiffResult:
+            return StructuredResult(parsed=DiffResult(diff_narrative='새 분석으로 작성'))
+        await gate.wait()   # the re-analysis of report 1 waits here, report 1 marked busy
+        return StructuredResult(parsed=schema.model_validate(EXTRACTION), input_tokens=1,
+                                output_tokens=1)
+
+    monkeypatch.setattr(LLMClient, 'parse', parse)
+    reanalysis = asyncio.create_task(
+        analysis.analyze_report(dict(db.tables['reports'][0]), force=True))
+    try:
+        await until(lambda: calls == ['ExtractionResult'])
+        for left, right in ((1, 3), (3, 1)):
+            error = await refused(compare_service.analyze_comparison(left, right))
+            assert (error.status_code, error.detail) == (409, BUSY)
+        assert calls == ['ExtractionResult']   # no narrative from the analysis being replaced
+        assert db.queries('report_summaries', 'update') == []
+        await reports_are_free(3)               # the refused narratives left report 3 unmarked
+    finally:
+        gate.set()
+    _, reused = await asyncio.wait_for(reanalysis, LIMIT_S)
+    assert reused is False
+    # once the new analysis is saved, the narrative is made from it
+    result = await asyncio.wait_for(compare_service.analyze_comparison(1, 3), LIMIT_S)
+    assert result['narrative'] == '새 분석으로 작성'
+    assert result['left']['summary']['one_line_summary'] == '분석 결과'
+    await reports_are_free(1, 3)
+
+
+async def test_a_narrative_with_a_report_being_deleted_is_409(db):
+    db.tables['reports'] = [tagged(1, '2026-02-09'), tagged(3, '2026-05-11')]
+    db.tables['report_summaries'] = [analysed(1, 70000), analysed(3, 85000)]
+    clearing, release = threading.Event(), threading.Event()
+
+    def hold_the_clear(query):   # the delete's first step, in its worker thread
+        if query.kind == 'update' and query.values('neq', 'report_id'):
+            clearing.set()
+            assert release.wait(LIMIT_S)
+
+    db.before_execute = hold_the_clear
+    deleting = asyncio.create_task(analysis.delete_summary(1))
+    try:
+        await until(clearing.is_set)
+        for left, right in ((1, 3), (3, 1)):
+            error = await refused(compare_service.analyze_comparison(left, right))
+            assert (error.status_code, error.detail) == (409, BUSY)
+        assert db.queries('report_summaries', 'delete') == []
+        await reports_are_free(3)   # the refused narratives left report 3 unmarked
+    finally:
+        release.set()
+    await asyncio.wait_for(deleting, LIMIT_S)
+    # deleted: the narrative now needs report 1 analysed again (no key needed to say so)
+    error = await refused(compare_service.analyze_comparison(1, 3))
+    assert (error.status_code, error.detail) == (422, NOT_ANALYZED)
+    await reports_are_free(1, 3)
