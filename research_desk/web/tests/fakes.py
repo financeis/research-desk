@@ -49,6 +49,7 @@ SPEC_ROUTES = {
     ('GET', '/api/stocks/{code}/reports'),
     ('GET', '/api/reports/{rid}/pdf'),
     ('POST', '/api/reports/{rid}/analyze'),
+    ('DELETE', '/api/reports/{rid}/analysis'),
     ('GET', '/api/compare'),
     ('POST', '/api/compare/analyze'),
     ('GET', '/api/market'),
@@ -145,10 +146,12 @@ class FakeCompanies:
 
 class FakeReports:
     """Answers like the reports service, behind its router and its window (compare reads the
-    reports through ``reports.get_report``). The old stub's ``report`` and ``analyze``."""
+    reports through ``reports.get_report``). The old stub's ``report`` and ``analyze``, plus
+    ``delete_analysis``; ``calls`` records what the router handed over."""
 
     def __init__(self, pdf: Path) -> None:
         self.pdf = pdf
+        self.calls: list[tuple] = []
 
     def get_report(self, rid: int) -> dict:
         return report(rid, f'2026-0{rid}-01')
@@ -159,9 +162,14 @@ class FakeReports:
     def pdf_path(self, rid: int) -> Path:
         return self.pdf
 
-    async def analyze(self, rid: int) -> dict:
+    async def analyze(self, rid: int, force: bool = False) -> dict:
+        self.calls.append(('analyze', rid, force))
         return self.get_report(rid) | {'summary': {'one_line_summary': '검증된 응답'},
                                        'analysis_reused': False}
+
+    async def delete_analysis(self, rid: int) -> dict:
+        self.calls.append(('delete_analysis', rid))
+        return self.get_report(rid) | {'summary': None}
 
 
 class FakeCoverage:
