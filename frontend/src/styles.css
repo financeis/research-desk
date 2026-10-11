@@ -1220,6 +1220,51 @@ h1 {
   line-height: 1.8;
   margin-top: 26px;
 }
+.image-read-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 18px;
+  padding: 8px 11px;
+  border-radius: 6px;
+  background: #fbf3e8;
+  color: var(--text-amber);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.6;
+}
+.compare-report-head .image-read-note {
+  margin: 0 0 12px;
+}
+.analysis-manage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+.analysis-manage .button,
+.analysis-confirm .button {
+  font-size: 10px;
+  min-height: 29px;
+  gap: 5px;
+}
+.analysis-confirm {
+  margin-top: 14px;
+  padding: 12px 13px;
+  border: 1px solid #ead9c6;
+  border-radius: 7px;
+  background: #fffaf3;
+}
+.analysis-confirm p {
+  font-size: 10px;
+  line-height: 1.8;
+  color: var(--text-body);
+  margin-bottom: 10px;
+}
+.analysis-confirm > div {
+  display: flex;
+  gap: 8px;
+}
 .analyze-callout {
   display: flex;
   gap: 10px;

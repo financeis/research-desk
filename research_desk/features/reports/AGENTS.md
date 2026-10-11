@@ -1,9 +1,9 @@
-# research_desk/features/reports/ — 분류가 끝난 리포트 읽기 창구, 기업별 리포트 목록·PDF·분석 요청 주소
+# research_desk/features/reports/ — 분류가 끝난 리포트 읽기 창구, 기업별 리포트 목록·PDF·분석 요청·분석 결과 지우기 주소
 
 ## 맡는 일
 
 - `reports` 표에서 분류가 끝난 행 읽기. 이 표는 단계별로 주인이 나뉘고, 이 기능의 몫은 읽기다(목록·상세·PDF·커버리지 집계 재료). 다른 기능은 리포트 행을 이 공개 창구로만 읽는다.
-- 웹 주소 세 개: `GET /api/stocks/{code}/reports`, `GET /api/reports/{rid}/pdf`, `POST /api/reports/{rid}/analyze`.
+- 웹 주소 네 개: `GET /api/stocks/{code}/reports`, `GET /api/reports/{rid}/pdf`, `POST /api/reports/{rid}/analyze`(`force` 질의 값), `DELETE /api/reports/{rid}/analysis`.
 - 리포트 공개 모양 `public_report(row, summary)`: 브라우저로 나가는 리포트의 유일한 모양이다. compare 응답의 `left`·`right`도 이 모양이다.
 - 다른 기능용 창구: `report_row`(내부 행), `get_report`(공개 모양 + 저장된 요약), `period_rows(since, include_oos)`, `stock_rows(code, since)`, `rows_for_stocks(codes, since)`(여러 종목의 분석 대상 행), `latest_report_sent_at()`(가장 최근 분석 대상 리포트의 `sent_at`), `tagging_in_progress(minutes=30)`(분류 작업이 도는 중인지, 개수 조회). compare는 `get_report`, coverage는 `period_rows`·`stock_rows`·`rows_for_stocks`(리포트 수), freshness는 `latest_report_sent_at`, peers는 `tagging_in_progress`(`peers build` 시작 전)를 쓴다.
 - 준비 실패 `NotReady("리포트", …)`: DB 접속 설정, 종목표 파일.
@@ -11,7 +11,7 @@
 ## 맡지 않는 일
 
 - `reports` 표 쓰기. 새 행은 collector, 분류 결과·잠금은 tagger, 검토 결과(승인·제외·재분류·되돌리기)는 `research_desk.features.review`가 쓴다. 구조 검사는 이 칸도 `reports`의 주인으로 보기 때문에 여기에 `insert`/`update`/`upsert`/`delete`를 넣어도 잡지 못한다. 그래도 넣지 않는다.
-- `report_summaries` 표(주인 analysis, `R11 표 주인`). 요약은 `analysis.summaries_for`, 분석은 `analysis.analyze_report`로만 닿는다. 409·422·재사용·키·PDF 글자 확인은 analysis 몫이라 여기서 미리 흉내 내지 않는다. 미리 하면 확인 순서와 AI 슬롯 대기 여부가 달라진다.
+- `report_summaries` 표(주인 analysis, `R11 표 주인`). 요약은 `analysis.summaries_for`, 분석은 `analysis.analyze_report`, 지우기는 `analysis.delete_summary`로만 닿는다. 409·422·재사용·키·PDF 글자 확인·바쁨 표시는 analysis 몫이라 여기서 미리 흉내 내지 않는다. 미리 하면 확인 순서와 AI 슬롯 대기 여부가 달라진다.
 - `failed_attempts` 표(collector).
 - 집계와 캐시. 기간별 묶기, 배열 펼치기, 날짜 단위 나누기, 180초 캐시는 `research_desk.features.coverage`가 한다. 창구는 행을 DataFrame 그대로 넘긴다.
 - 두 보고서 비교(compare), 검토 대기열과 `/api/review/…` 주소(review).
@@ -43,9 +43,10 @@
 **주소.**
 - 목록: 종목표 조회는 `code.zfill(6)`, DB 조회는 받은 코드 그대로다. 종목표에 없는 코드는 DB를 읽기 전에 404 `종목을 찾을 수 없습니다.`(7자리 이상은 자르지 않으므로 404). 2000-01-01 이후 분석 대상 행을 `published_at` 내림차순, 같으면 `id` 내림차순으로 준다. 리포트 종류로 거르지 않는다(산업 리포트도 그 코드를 가지면 나온다). 요약은 나열한 id 전부로 `analysis.summaries_for`를 한 번 불러 붙인다. 업종 빈 칸은 `""`다.
 - PDF: 분석 대상 행만 내준다(`review_needed`·`pending`·`processing`·분석 대상 외 → 404 `기업 보고서를 찾을 수 없습니다.`). 경로는 `core.pdf.resolve_in_storage(core.settings.storage_base_dir(), file_path)`로만 푼다. 저장 폴더 밖이거나 `.pdf`가 아니면 404 `PDF를 찾을 수 없습니다.`, 파일이 없으면 404 `로컬 PDF 파일이 없습니다. 수집 상태를 확인해 주세요.`
-- 분석 요청: 행을 먼저 읽고(404), 그다음 `analysis.analyze_report(row)`를 부른다. analysis가 409를 낼 상황이어도 행이 없으면 404가 먼저다. analysis가 낸 `HTTPException`과 `NotReady("분석", …)`은 잡지 않고 그대로 올린다. 응답은 공개 모양 + `"analysis_reused": bool`이다.
+- 분석 요청: 행을 먼저 읽고(404), 그다음 `analysis.analyze_report(row, force=force)`를 부른다. `force`는 질의 값(기본 거짓, FastAPI의 참·거짓 읽기, 그 밖의 값은 422)이고 참이면 저장 결과 재사용을 건너뛴다(다시 분석). analysis가 409를 낼 상황이어도 행이 없으면 404가 먼저다. analysis가 낸 `HTTPException`과 `NotReady("분석", …)`은 잡지 않고 그대로 올린다. 응답은 공개 모양 + `"analysis_reused": bool`이다.
+- 분석 결과 지우기(`delete_analysis`): 행을 먼저 읽고(404, 분석 대상 행만), 그다음 `await analysis.delete_summary(rid)` → 공개 모양(`summary: null`, `analysis_reused` 없음). 지울 결과가 없어도 200이고, 리포트 종류와 상관없이 지운다. 종목표·모델 키·AI 자리가 필요 없다. analysis의 409·`NotReady`는 그대로 올린다.
 - `rid`가 숫자가 아니면 FastAPI 422로 끝나고 DB를 읽지 않는다.
-- 주소는 정확히 이 셋이다. 처리 함수 이름(`stock_reports`, `pdf`, `analyze`)과 인자는 옛 앱과 같고 docstring이 없다. docstring을 달면 `/openapi.json`에 설명이 생겨 옛 앱과 달라진다. 주소를 더하면 웹 조립부 테스트의 전체 주소 목록이 깨지므로 화면 계약 변경으로 다룬다.
+- 주소는 정확히 이 넷이다. 처리 함수 이름(`stock_reports`, `pdf`, `analyze`, `delete_analysis`)에 docstring이 없다. 앞의 셋은 옛 앱과 같고, `analyze`는 매개변수 `force: bool = False` 하나만 더했다(`/openapi.json`의 요약·operationId는 그대로). docstring을 달면 `/openapi.json`에 설명이 생겨 옛 앱과 달라진다. 주소를 더하면 웹 조립부 테스트의 전체 주소 목록이 깨지므로 화면 계약 변경으로 다룬다.
 
 **준비.**
 - DB는 모든 읽기에 필요하다. 설정이 없으면(빈 값 포함) `NotReady("리포트", "DB 접속 설정(SUPABASE_URL, SUPABASE_SERVICE_KEY)이 없습니다")`. 창구 함수도 같은 오류를 내고, 부른 기능은 이를 자기 이름으로 바꾸지 않는다.
@@ -66,9 +67,9 @@
 
 ## 테스트
 
-- **꼭 덮을 것.** 모든 `tagging_status` × 사유 조합에서 읽기 결과가 `domain.reports.is_in_scope`와 같은지, 16열(예전 15열 다음 `publisher_type`)·쪽 크기·쪽 창(1000행 경계 앞뒤), 유효 날짜의 한국 시간 경계, 코드 0 채우기는 종목표 조회에만, 공개 모양의 키·순서와 응답 본문에 `file_path`·저장 경로·키가 없음, 404 문구, 분석 전 404, 준비 실패·재시도·`.env` 추가 반영·종목표 유지·버전 경고. 여러 종목 읽기의 코드 100개 경계와 겹친 행 한 번, 가장 최근 리포트의 시간대(오프셋이 다른 값도 UTC로), 분류 진행 확인의 30분 경계와 `processing`이 아닌 행 무시·행을 받지 않음.
+- **꼭 덮을 것.** 모든 `tagging_status` × 사유 조합에서 읽기 결과가 `domain.reports.is_in_scope`와 같은지, 16열(예전 15열 다음 `publisher_type`)·쪽 크기·쪽 창(1000행 경계 앞뒤), 유효 날짜의 한국 시간 경계, 코드 0 채우기는 종목표 조회에만, 공개 모양의 키·순서와 응답 본문에 `file_path`·저장 경로·키가 없음, 404 문구, 분석·지우기 전 404, `force` 전달(없음·참·거짓), 지우기 응답(`summary: null`, 두 번 지워도 200, 종류 무관, 키·종목표 없이), analysis의 409·`NotReady`가 그대로 올라감, 준비 실패·재시도·`.env` 추가 반영·종목표 유지·버전 경고. 여러 종목 읽기의 코드 100개 경계와 겹친 행 한 번, 가장 최근 리포트의 시간대(오프셋이 다른 값도 UTC로), 분류 진행 확인의 30분 경계와 `processing`이 아닌 행 무시·행을 받지 않음.
 - **가짜 DB.** `tests/fakes.py`의 `FakeSupabase`는 일부러 읽기 전용이다. 쓰기 메서드가 없어서 쓰기 코드가 생기면 테스트가 깨진다. 쓰기 메서드를 더하지 않는다. PostgREST처럼 NULL은 `eq`·`in_`·`gte`·`contains`·`ov`를 통과하지 못하고 `is_(col, 'null')`만 통과한다. `select`는 고른 열만 돌려주고, `count='exact'`는 창과 상관없이 맞는 행 수를, `head=True`는 행 없이 답한다. `order`는 PostgreSQL처럼 NULL을 오름차순 맨 뒤·내림차순 맨 앞에 둔다(`nullsfirst`로 바꿈). 같은 쿼리에 `range()`를 다시 부르면 마지막 창을 쓴다.
 - **밖에 기대지 않게.** autouse `clean_env`가 관련 환경 변수를 지우고 `core.db.supabase_client`가 오류를 내게 바꾼다(진짜 클라이언트 금지). `db` 고정물만 가짜를 내준다. 종목표는 `tmp_path`에 진짜와 같은 머리줄(첫 칸이 `"종목\n코드"`처럼 따옴표 안에서 줄을 바꾼다)로 쓰고 `domain.stocks.write_version`으로 버전 파일을 만든다. `.env` 다시 읽기는 `env_file` 고정물로만 시험한다.
-- **analysis 바꿔치기.** 이 기능이 찾는 자리에서 바꾼다: `monkeypatch.setattr(analysis, 'summaries_for', …)`, `monkeypatch.setattr(analysis, 'analyze_report', …)`.
+- **analysis 바꿔치기.** 이 기능이 찾는 자리에서 바꾼다: `monkeypatch.setattr(analysis, 'summaries_for', …)`, `monkeypatch.setattr(analysis, 'analyze_report', …)`, `monkeypatch.setattr(analysis, 'delete_summary', …)`. 가짜 DB가 읽기 전용이라 지우기의 성공 경로는 `delete_summary`를 바꿔 시험하고, 실제로 지우는 일은 analysis 테스트가 덮는다.
 - **주소 테스트.** `build_app(service)` = 라우터 + `get_service` 바꿔치기 + `NotReady` → 503 처리. 웹 조립부와 같은 503 모양이 나온다.
 - **함정.** 창구 함수 테스트는 모듈 전역 `_service`를 `window` 고정물로 비우고 시작한다. 진짜 analysis 창구를 함께 돌릴 때는 analysis의 `_supabase_client`·`_analyzing`도 비운다(`real_analysis`). 안 비우면 준비된 가짜 클라이언트가 다른 테스트로 샌다.

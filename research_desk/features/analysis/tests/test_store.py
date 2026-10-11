@@ -21,8 +21,12 @@ class FakeQuery:
         self.calls.append(('in_', col, list(vals))); return self
     def eq(self, col, val):
         self.calls.append(('eq', col, val)); return self
+    def neq(self, col, val):
+        self.calls.append(('neq', col, val)); return self
     def update(self, payload):
         self.calls.append(('update', payload)); return self
+    def delete(self):
+        self.calls.append(('delete',)); return self
     def upsert(self, payload, on_conflict=None):
         self.calls.append(('upsert', payload, on_conflict)); return self
     def execute(self):
@@ -136,3 +140,38 @@ def test_store_comparison_details():
     # only the four comparison fields are written
     assert set(payload) == {'prev_report_id', 'prev_match_type', 'diff_narrative',
                             'comparison_details'}
+
+
+def test_clear_comparisons_citing_nulls_only_other_rows_four_fields():
+    """X를 앞 문서로 인용한 다른 행들의 비교 칸 네 개만 NULL로."""
+    sb = FakeSupabase()
+    assert store.clear_comparisons_citing(sb, 7) is None
+    assert sb.last_query.table == 'report_summaries'
+    calls = sb.last_query.calls
+    assert calls[0] == ('update', {'prev_report_id': None, 'prev_match_type': None,
+                                   'diff_narrative': None, 'comparison_details': None})
+    filters = [c for c in calls if c[0] in ('eq', 'neq', 'in_')]
+    assert filters == [('eq', 'prev_report_id', 7), ('neq', 'report_id', 7)]
+    assert not any(c[0] in ('upsert', 'delete', 'select') for c in calls)
+    assert calls[-1] == ('execute',)
+
+
+def test_clear_comparisons_citing_no_match_is_quiet():
+    sb = FakeSupabase([])  # nothing cites the report
+    assert store.clear_comparisons_citing(sb, 7) is None
+    assert sb.last_query.calls[-1] == ('execute',)
+
+
+def test_delete_summary_row_filters_report_id_only():
+    """버전과 상관없이 report_id = X 행을 지운다."""
+    sb = FakeSupabase()
+    assert store.delete_summary_row(sb, 9) is None
+    assert sb.last_query.table == 'report_summaries'
+    calls = sb.last_query.calls
+    assert calls == [('delete',), ('eq', 'report_id', 9), ('execute',)]
+
+
+def test_delete_summary_row_no_match_is_quiet():
+    sb = FakeSupabase([])  # no row for the report
+    assert store.delete_summary_row(sb, 9) is None
+    assert sb.last_query.calls[-1] == ('execute',)

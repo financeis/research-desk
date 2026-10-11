@@ -1,5 +1,9 @@
 """Analysis settings (spec §7): the Phase 2 model and its limits.
 
+``LLM_MODEL_PHASE2`` (legacy ``OPENAI_MODEL_PHASE2``), ``PHASE2_PER_REPORT_TIMEOUT_S``,
+``PHASE2_MAX_INPUT_TOKENS``, ``PHASE2_SUMMARY_VERSION`` and
+``PHASE2_IMAGE_TIMEOUT_S`` (one page-image analysis call's time limit).
+
 Read when called, never at import. The model name picks the provider (see
 ``research_desk.core.llm``); API keys are checked by ``phase2_llm()`` right
 before an AI call, not here. ``PHASE2_MAX_CONCURRENT`` and ``SUPABASE_DB_URL``
@@ -16,6 +20,7 @@ DEFAULT_MODEL = "gpt-6-luna"
 DEFAULT_PER_REPORT_TIMEOUT_S = 180
 DEFAULT_MAX_INPUT_TOKENS = 30000
 DEFAULT_SUMMARY_VERSION = "llm-summary@1.0"
+DEFAULT_IMAGE_TIMEOUT_S = 360
 
 
 @dataclass(frozen=True)
@@ -24,6 +29,7 @@ class AnalysisSettings:
     per_report_timeout_s: int  # limit for each AI call
     max_input_tokens: int      # cap on the page text sent to the model
     summary_version: str       # stored with each summary; only this version is shown
+    image_timeout_s: int = DEFAULT_IMAGE_TIMEOUT_S  # limit for each page-image AI call
 
 
 def summary_version() -> str:
@@ -40,4 +46,6 @@ def load_settings() -> AnalysisSettings:
         max_input_tokens=core_settings.get_int("PHASE2_MAX_INPUT_TOKENS",
                                                DEFAULT_MAX_INPUT_TOKENS),
         summary_version=summary_version(),
+        image_timeout_s=core_settings.get_int("PHASE2_IMAGE_TIMEOUT_S",
+                                              DEFAULT_IMAGE_TIMEOUT_S),
     )

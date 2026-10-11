@@ -8,6 +8,9 @@
   them up (see fakes.World).
 - ``ai``: ``analysis.phase2_llm`` replaced the same way (see fakes.FakeAI). ``analysis.ai_slot``
   is never replaced: compare always shares the real 2-call limit.
+- ``fresh_busy_marker`` (autouse): analysis' busy-report marker starts empty in every test and is
+  put back after. ``analysis.hold_reports`` itself is never replaced: compare always shares the
+  real marker with analysis and delete.
 """
 from __future__ import annotations
 
@@ -16,13 +19,14 @@ import pytest
 from research_desk.core import db as core_db
 from research_desk.core import llm as core_llm
 from research_desk.features import analysis, reports
+from research_desk.features.analysis import service as analysis_service
 
 from .fakes import FakeAI, World
 
 ENV = ('ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'LLM_MODEL_PHASE2', 'OPENAI_MODEL_PHASE2',
        'PHASE2_PER_REPORT_TIMEOUT_S', 'PHASE2_MAX_INPUT_TOKENS', 'PHASE2_SUMMARY_VERSION',
-       'PHASE2_MAX_CONCURRENT', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'SUPABASE_DB_URL',
-       'STORAGE_BASE_DIR', 'KRX_CSV_PATH', 'CODEX_BIN', 'ANTHROPIC_EFFORT',
+       'PHASE2_IMAGE_TIMEOUT_S', 'PHASE2_MAX_CONCURRENT', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY',
+       'SUPABASE_DB_URL', 'STORAGE_BASE_DIR', 'KRX_CSV_PATH', 'CODEX_BIN', 'ANTHROPIC_EFFORT',
        'CODEX_REASONING_EFFORT', 'LANGSMITH_TRACING', 'LANGSMITH_API_KEY')
 
 
@@ -36,6 +40,11 @@ def clean_env(monkeypatch):
         raise AssertionError('no real Supabase client in these tests')
 
     monkeypatch.setattr(core_db, 'supabase_client', refuse)
+
+
+@pytest.fixture(autouse=True)
+def fresh_busy_marker(monkeypatch):
+    monkeypatch.setattr(analysis_service, '_analyzing', set())
 
 
 @pytest.fixture

@@ -12,6 +12,8 @@ New (spec §6, §9.6, §9.9):
 - FastAPI's own 422 for a missing or non-numeric id, before any read;
 - POST needs both analyses (422), gives back a narrative saved for exactly this pair without the
   AI or a key, and otherwise writes, saves and returns a new one;
+- POST with a report marked busy (being analyzed or deleted) is 409 with compare's text, while
+  GET still answers (contracts POST /api/compare/analyze);
 - NotReady from the reports window or from analysis.phase2_llm → 503 with that feature's name.
 """
 from __future__ import annotations
@@ -22,9 +24,10 @@ from fastapi.testclient import TestClient
 
 from research_desk.core.settings import NotReady
 from research_desk.features import compare, reports
+from research_desk.features.analysis import service as analysis_service
 from research_desk.features.compare import router
 
-from .fakes import REPORT_NOT_FOUND, analysed, build_app, metric, tagged
+from .fakes import BUSY, REPORT_NOT_FOUND, analysed, build_app, metric, tagged
 
 NOT_SINGLE = '금융 비교는 단일종목 보고서 두 개를 선택해 주세요.'
 SAME_REPORT = '서로 다른 보고서 두 개를 선택해 주세요.'
@@ -245,6 +248,25 @@ def test_a_new_narrative_is_written_saved_and_then_reused(client, world, ai):
     assert client.post('/api/compare/analyze', json={'left': 3, 'right': 1}).json()[
         'narrative'] == ai.narrative
     assert ai.prepared == 1 and len(ai.calls) == 1 and len(world.saved) == 1
+
+
+@pytest.mark.parametrize('narrative', [None, 'KB는 목표주가를 높였다.'], ids=['new', 'saved'])
+@pytest.mark.parametrize('busy', [1, 3], ids=['earlier busy', 'later busy'])
+def test_a_busy_report_is_409_for_a_narrative_only(client, world, ai, busy, narrative):
+    pair(world, narrative=narrative)
+    before = client.get('/api/compare?left=1&right=3').json()
+    analysis_service._analyzing.add(busy)   # analysis' busy marker: being analyzed or deleted
+    response = client.post('/api/compare/analyze', json={'left': 1, 'right': 3})
+    assert (response.status_code, response.json()) == (409, {'detail': BUSY})
+    assert ai.prepared == 0 and world.saved == []
+    assert analysis_service._analyzing == {busy}   # the other report was not left marked
+    # GET neither looks at the marker nor sets it
+    assert client.get('/api/compare?left=1&right=3').json() == before
+    assert analysis_service._analyzing == {busy}
+    analysis_service._analyzing.discard(busy)
+    response = client.post('/api/compare/analyze', json={'left': 1, 'right': 3})
+    assert response.status_code == 200
+    assert analysis_service._analyzing == set()
 
 
 # ── features that are not ready (spec §9.9) ──────────────────────────────────

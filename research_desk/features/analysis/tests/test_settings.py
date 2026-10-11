@@ -5,7 +5,8 @@ Ported from langgraph_tagger/analytics/llm_summary/tests/test_config.py:
 - the max_concurrent (PHASE2_MAX_CONCURRENT) check is gone (spec §10 item 6);
 - make_llm_client's RuntimeError became NotReady("분석", <same Korean text>)
   raised by phase2_llm() (spec §9.9).
-New: phase2_llm() re-reads .env before checking the key (env_file fixture).
+New: phase2_llm() re-reads .env before checking the key (env_file fixture);
+PHASE2_IMAGE_TIMEOUT_S, the time limit of one page-image analysis call.
 Every variable read here is set or deleted by the test itself.
 """
 import dataclasses
@@ -13,6 +14,7 @@ import dataclasses
 import pytest
 
 from research_desk.core import llm as core_llm
+from research_desk.core import settings as core_settings
 from research_desk.core.llm import LLMClient
 from research_desk.core.settings import NotReady
 from research_desk.features.analysis import phase2_llm
@@ -20,7 +22,8 @@ from research_desk.features.analysis.settings import AnalysisSettings, load_sett
 
 PHASE2_VARS = ('LLM_MODEL_PHASE2', 'OPENAI_MODEL_PHASE2', 'PHASE2_MAX_CONCURRENT',
                'PHASE2_PER_REPORT_TIMEOUT_S', 'PHASE2_MAX_INPUT_TOKENS',
-               'PHASE2_SUMMARY_VERSION', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
+               'PHASE2_SUMMARY_VERSION', 'PHASE2_IMAGE_TIMEOUT_S',
+               'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
                'SUPABASE_DB_URL', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'CODEX_BIN',
                'ANTHROPIC_EFFORT', 'CODEX_REASONING_EFFORT')
 
@@ -44,11 +47,13 @@ def test_load_happy_path(clean):
     assert cfg.per_report_timeout_s == 180
     assert cfg.max_input_tokens == 30000
     assert cfg.summary_version == 'llm-summary@1.0'
+    assert cfg.image_timeout_s == 360
     # No key, DB URL or concurrency setting is part of the analysis settings:
     # keys are checked right before an AI call (phase2_llm), the AI concurrency
     # is fixed at 2 (ai_slot), and analysis does not use SUPABASE_DB_URL.
     assert [f.name for f in dataclasses.fields(cfg)] == [
-        'llm_model', 'per_report_timeout_s', 'max_input_tokens', 'summary_version']
+        'llm_model', 'per_report_timeout_s', 'max_input_tokens', 'summary_version',
+        'image_timeout_s']
 
 
 def test_load_overrides(clean):
@@ -57,12 +62,14 @@ def test_load_overrides(clean):
     clean.setenv('PHASE2_PER_REPORT_TIMEOUT_S', '90')
     clean.setenv('PHASE2_MAX_INPUT_TOKENS', '15000')
     clean.setenv('PHASE2_SUMMARY_VERSION', 'llm-summary@2.0')
+    clean.setenv('PHASE2_IMAGE_TIMEOUT_S', '500')
 
     cfg = load_settings()
     assert cfg.llm_model == 'gpt-5.4'
     assert cfg.per_report_timeout_s == 90
     assert cfg.max_input_tokens == 15000
     assert cfg.summary_version == 'llm-summary@2.0'
+    assert cfg.image_timeout_s == 500
     assert not hasattr(cfg, 'max_concurrent')
 
 
@@ -88,6 +95,39 @@ def test_bad_number_is_an_error(clean):
     clean.setenv('PHASE2_MAX_INPUT_TOKENS', 'lots')
     with pytest.raises(ValueError):
         load_settings()
+
+
+@pytest.mark.parametrize('raw', ['six minutes', '', '360.5'])
+def test_bad_image_timeout_is_an_error(clean, raw):
+    # Same as the other numeric settings: ValueError (web: generic 503), not NotReady.
+    clean.setenv('PHASE2_IMAGE_TIMEOUT_S', raw)
+    with pytest.raises(ValueError):
+        load_settings()
+
+
+def test_image_timeout_is_separate_from_the_text_timeout(clean):
+    clean.setenv('PHASE2_PER_REPORT_TIMEOUT_S', '90')
+    cfg = load_settings()
+    assert (cfg.per_report_timeout_s, cfg.image_timeout_s) == (90, 360)
+    clean.delenv('PHASE2_PER_REPORT_TIMEOUT_S')
+    clean.setenv('PHASE2_IMAGE_TIMEOUT_S', '600')
+    cfg = load_settings()
+    assert (cfg.per_report_timeout_s, cfg.image_timeout_s) == (180, 600)
+
+
+def test_settings_without_image_timeout_keep_the_default():
+    # Built without the new field (the four older fields only): it defaults.
+    cfg = AnalysisSettings('gpt-6-luna', 180, 30000, 'llm-summary@1.0')
+    assert cfg.image_timeout_s == 360
+
+
+def test_image_timeout_is_read_when_called_from_the_loaded_env(clean, env_file):
+    # load_settings() reads the process environment; callers run load_env()
+    # first (phase2_llm() does), so a value added to .env counts on the next call.
+    env_file.write_text('PHASE2_IMAGE_TIMEOUT_S=420\n', encoding='utf-8')
+    assert load_settings().image_timeout_s == 360
+    core_settings.load_env()
+    assert load_settings().image_timeout_s == 420
 
 
 # ── phase2_llm(): model key / codex CLI, checked only when called ────────────

@@ -41,8 +41,8 @@ telegram_report/
 │   ├── features/
 │   │   ├── AGENTS.md                ← 기능 폴더 모양, 공개 창구(명령이 있는 기능의 창구 포함), 기능 사이 의존, 새 기능 붙이는 법
 │   │   ├── companies/AGENTS.md      ← 기업 목록·관심 기업
-│   │   ├── reports/AGENTS.md        ← 분류 끝난 리포트 조회(16열), 목록·PDF·분석 실행 주소, 여러 종목 읽기·분류 진행 확인
-│   │   ├── analysis/AGENTS.md       ← 리포트 1건 재무 분석, report_summaries 표, 웹 AI 자리 2개
+│   │   ├── reports/AGENTS.md        ← 분류 끝난 리포트 조회(16열), 목록·PDF·분석 실행(다시 분석)·분석 결과 지우기 주소, 여러 종목 읽기·분류 진행 확인
+│   │   ├── analysis/AGENTS.md       ← 리포트 1건 재무 분석(글자 없는 PDF는 쪽 그림으로), 결과 지우기, 바쁜 리포트 표시, report_summaries 표, 웹 AI 자리 2개
 │   │   ├── compare/AGENTS.md        ← 두 보고서 비교
 │   │   ├── coverage/AGENTS.md       ← 커버리지 집계, 종목별 증권사 리포트 수
 │   │   ├── review/AGENTS.md         ← 수동 검토와 되돌리기

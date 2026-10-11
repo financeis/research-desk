@@ -14,7 +14,9 @@ Ported from langgraph_tagger:
 New (spec §6, §9.5, §9.9, §13 item 3): the public report shape, the zero-padded company lookup
 with the code as received for the DB, list order and attached summaries, the 404 texts, the row
 read (404) before analysis, readiness (NotReady, .env re-read, retry on the next request, the
-stock list needed by the list route only, version warnings) and the window functions.
+stock list needed by the list route only, version warnings) and the window functions. The analyze
+address's ``force`` value handed to analysis, and the analysis delete address (row read first: 404
+before analysis; analysis' 409 / NotReady passed through; the public report without a summary).
 
 The DB is an in-memory read-only stand-in handed out by core.db.supabase_client. The analysis
 window is replaced where this feature looks it up, except at the end, where the real analysis
@@ -47,7 +49,8 @@ from research_desk.features.reports.tests.fakes import FakeSupabase
 
 ENV = ('SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'SUPABASE_DB_URL', 'STORAGE_BASE_DIR', 'KRX_CSV_PATH',
        'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'LLM_MODEL_PHASE2', 'OPENAI_MODEL_PHASE2',
-       'PHASE2_SUMMARY_VERSION', 'PHASE2_PER_REPORT_TIMEOUT_S', 'PHASE2_MAX_INPUT_TOKENS', 'CODEX_BIN',
+       'PHASE2_SUMMARY_VERSION', 'PHASE2_PER_REPORT_TIMEOUT_S', 'PHASE2_MAX_INPUT_TOKENS',
+       'PHASE2_IMAGE_TIMEOUT_S', 'CODEX_BIN',
        'TELEGRAM_API_ID', 'TELEGRAM_API_HASH', 'TELEGRAM_CHANNEL', 'TELEGRAM_CHANNEL_ID')
 
 URL, KEY = 'https://example.supabase.test', 'service-key'
@@ -176,16 +179,33 @@ def summaries(monkeypatch):
 
 @pytest.fixture
 def analyze(monkeypatch):
-    """analysis.analyze_report, replaced where this feature looks it up; records each row."""
-    state = SimpleNamespace(rows=[], result=({'one_line_summary': '검증된 응답'}, False), error=None)
+    """analysis.analyze_report, replaced where this feature looks it up; records each row and
+    the ``force`` it was handed."""
+    state = SimpleNamespace(rows=[], forces=[], result=({'one_line_summary': '검증된 응답'}, False),
+                            error=None)
 
-    async def analyze_report(row):
+    async def analyze_report(row, force=False):
         state.rows.append(dict(row))
+        state.forces.append(force)
         if state.error is not None:
             raise state.error
         return state.result
 
     monkeypatch.setattr(analysis, 'analyze_report', analyze_report)
+    return state
+
+
+@pytest.fixture
+def delete(monkeypatch):
+    """analysis.delete_summary, replaced where this feature looks it up; records each id."""
+    state = SimpleNamespace(rids=[], error=None)
+
+    async def delete_summary(rid):
+        state.rids.append(rid)
+        if state.error is not None:
+            raise state.error
+
+    monkeypatch.setattr(analysis, 'delete_summary', delete_summary)
     return state
 
 
@@ -228,20 +248,41 @@ def test_window_exposes_the_public_names():
         assert callable(getattr(reports, name)), name
 
 
-def test_the_router_serves_exactly_the_three_addresses():
+def test_the_router_serves_exactly_the_four_addresses():
     assert sorted((sorted(r.methods), r.path) for r in router.routes) == [
+        (['DELETE'], '/api/reports/{rid}/analysis'),
         (['GET'], '/api/reports/{rid}/pdf'),
         (['GET'], '/api/stocks/{code}/reports'),
         (['POST'], '/api/reports/{rid}/analyze'),
     ]
     # the old handler names, so these /openapi.json entries stay the same
-    assert sorted(r.name for r in router.routes) == ['analyze', 'pdf', 'stock_reports']
+    assert sorted(r.name for r in router.routes) == ['analyze', 'delete_analysis', 'pdf', 'stock_reports']
 
 
-def test_a_report_id_must_be_a_number(client, db, analyze):
+def test_the_analyze_entry_gains_only_the_force_query_value():
+    app = FastAPI()
+    app.include_router(router)
+    spec = app.openapi()
+    analyze_entry = spec['paths']['/api/reports/{rid}/analyze']['post']
+    assert (analyze_entry['summary'], analyze_entry['operationId']) == (
+        'Analyze', 'analyze_api_reports__rid__analyze_post')
+    assert 'description' not in analyze_entry
+    assert [(p['name'], p['in'], p['required']) for p in analyze_entry['parameters']] == [
+        ('rid', 'path', True), ('force', 'query', False)]
+    force = analyze_entry['parameters'][1]['schema']
+    assert (force['type'], force['default']) == ('boolean', False)
+    delete_entry = spec['paths']['/api/reports/{rid}/analysis']['delete']
+    assert (delete_entry['summary'], delete_entry['operationId']) == (
+        'Delete Analysis', 'delete_analysis_api_reports__rid__analysis_delete')
+    assert 'description' not in delete_entry and 'requestBody' not in delete_entry
+    assert [(p['name'], p['in']) for p in delete_entry['parameters']] == [('rid', 'path')]
+
+
+def test_a_report_id_must_be_a_number(client, db, analyze, delete):
     assert client.get('/api/reports/abc/pdf').status_code == 422
     assert client.post('/api/reports/abc/analyze').status_code == 422
-    assert db.executed == [] and analyze.rows == []
+    assert client.delete('/api/reports/abc/analysis').status_code == 422
+    assert db.executed == [] and analyze.rows == [] and delete.rids == []
 
 
 # ── the public report shape (spec §6) ────────────────────────────────────────
@@ -270,21 +311,27 @@ def test_public_report_shows_missing_columns_as_null():
     assert public_report({'id': 5}, None) == dict.fromkeys(PUBLIC_KEYS[:-1]) | {'id': 5, 'pdf_url': '/api/reports/5/pdf'}
 
 
-def test_the_public_shape_stays_13_keys_without_publisher_type(client, db, stock_csv, summaries, analyze):
+def test_the_public_shape_stays_13_keys_without_publisher_type(client, db, stock_csv, summaries, analyze,
+                                                                delete):
     # the rows read now carry publisher_type (16 columns); the browser shape does not change
     row = tagged(1, publisher_type='data_provider')
     assert 'publisher_type' in row and list(public_report(row, None)) == PUBLIC_KEYS
     db.tables['reports'] = [row]
     listed = client.get('/api/stocks/016360/reports').json()['reports']
     analyzed = client.post('/api/reports/1/analyze').json()
+    deleted = client.delete('/api/reports/1/analysis').json()
     assert [list(r) for r in listed] == [PUBLIC_KEYS]
     assert list(analyzed) == PUBLIC_KEYS + ['analysis_reused']
+    assert list(deleted) == PUBLIC_KEYS
     assert len(PUBLIC_KEYS) == 13
 
 
-def test_browser_responses_never_carry_paths_or_keys(client, db, stock_csv, storage, summaries, analyze):
+def test_browser_responses_never_carry_paths_or_keys(client, db, stock_csv, storage, summaries, analyze,
+                                                     delete):
     db.tables['reports'] = [tagged(1)]
-    for response in (client.get('/api/stocks/016360/reports'), client.post('/api/reports/1/analyze')):
+    for response in (client.get('/api/stocks/016360/reports'), client.post('/api/reports/1/analyze'),
+                     client.post('/api/reports/1/analyze?force=true'),
+                     client.delete('/api/reports/1/analysis')):
         assert response.status_code == 200
         text = response.text
         for secret in ('file_path', '2026/1.pdf', 'internal caption', 'file_hash', 'ab' * 32,
@@ -464,23 +511,66 @@ def test_a_missing_report_is_404_before_analysis(client, db, analyze, row):
 
 
 KEY_REASON = 'OPENAI_API_KEY가 설정되지 않았습니다. .env에 추가 후 분석 다시 시도하세요.'
+IN_FLIGHT = '이 보고서는 분석 중입니다. 잠시 후 새로고침해 주세요.'
+EMPTY_IMAGE_RESULT = '그림으로도 리포트 내용을 읽지 못했습니다.'
 
 
 @pytest.mark.parametrize('error, status, detail', [
-    (HTTPException(409, '이 보고서는 분석 중입니다. 잠시 후 새로고침해 주세요.'), 409,
-     '이 보고서는 분석 중입니다. 잠시 후 새로고침해 주세요.'),
+    (HTTPException(409, IN_FLIGHT), 409, IN_FLIGHT),
     (HTTPException(422, '금융 정보 분석은 단일종목 보고서를 선택해 주세요.'), 422,
      '금융 정보 분석은 단일종목 보고서를 선택해 주세요.'),
     (HTTPException(422, 'PDF에서 읽을 수 있는 텍스트가 없습니다.'), 422, 'PDF에서 읽을 수 있는 텍스트가 없습니다.'),
+    (HTTPException(422, EMPTY_IMAGE_RESULT), 422, EMPTY_IMAGE_RESULT),
     (HTTPException(404, NOT_IN_STORAGE), 404, NOT_IN_STORAGE),
     (NotReady('분석', KEY_REASON), 503, f'분석 기능을 지금 쓸 수 없습니다: {KEY_REASON}'),
-], ids=['409', '422 type', '422 text', '404 pdf', 'analysis not ready'])
-def test_analysis_errors_reach_the_browser_unchanged(client, db, analyze, error, status, detail):
+], ids=['409', '422 type', '422 text', '422 empty image answer', '404 pdf', 'analysis not ready'])
+@pytest.mark.parametrize('query', ['', '?force=true'], ids=['plain', 'forced'])
+def test_analysis_errors_reach_the_browser_unchanged(client, db, analyze, error, status, detail, query):
     db.tables['reports'] = [tagged(1)]
     analyze.error = error
-    response = client.post('/api/reports/1/analyze')
+    response = client.post(f'/api/reports/1/analyze{query}')
     assert response.status_code == status
     assert response.json() == {'detail': detail}
+
+
+@pytest.mark.parametrize('query, force', [
+    ('', False), ('?force=false', False), ('?force=true', True),
+], ids=['no force', 'force=false', 'force=true'])
+def test_force_is_handed_to_analysis(client, db, analyze, query, force):
+    # contracts POST /api/reports/{rid}/analyze: force skips only analysis' reuse; without it (or false) nothing changes
+    db.tables['reports'] = [tagged(1)]
+    response = client.post(f'/api/reports/1/analyze{query}')
+    assert response.status_code == 200
+    assert analyze.forces == [force]
+    assert analyze.forces[0] is force
+    assert response.json() == public_report(tagged(1), {'one_line_summary': '검증된 응답'}) | {
+        'analysis_reused': False}
+
+
+def test_a_force_that_is_not_true_or_false_is_422_before_the_row_is_read(client, db, analyze):
+    db.tables['reports'] = [tagged(1)]
+    assert client.post('/api/reports/1/analyze?force=maybe').status_code == 422
+    assert db.executed == [] and analyze.rows == []
+
+
+@pytest.mark.parametrize('row', [None, tagged(1, status='review_needed'),
+                                 tagged(1, status='verified', reason='foreign')],
+                         ids=['no row', 'not final', 'out of scope'])
+def test_a_forced_analysis_of_a_missing_report_is_404_before_analysis(client, db, analyze, row):
+    analyze.error = HTTPException(409, IN_FLIGHT)
+    db.tables['reports'] = [row] if row else []
+    response = client.post('/api/reports/1/analyze?force=true')
+    assert (response.status_code, response.json()) == (404, REPORT_NOT_FOUND)
+    assert analyze.rows == []
+
+
+async def test_the_service_hands_force_to_analysis(db, analyze):
+    db.tables['reports'] = [tagged(1)]
+    service = ReportsService()
+    await service.analyze(1)
+    await service.analyze(1, force=True)
+    await service.analyze(1, force=False)
+    assert analyze.forces == [False, True, False]
 
 
 async def test_only_the_requested_report_rows_are_read(db, analyze):
@@ -499,6 +589,96 @@ def test_analyze_needs_no_stock_list(client, db, analyze, tmp_path, monkeypatch)
     monkeypatch.setenv('KRX_CSV_PATH', str(tmp_path / 'missing.csv'))
     db.tables['reports'] = [tagged(1)]
     assert client.post('/api/reports/1/analyze').status_code == 200
+
+
+# ── DELETE /api/reports/{rid}/analysis ───────────────────────────────────────
+
+def test_a_deleted_analysis_answers_the_public_report_without_a_summary(client, db, summaries, delete):
+    db.tables['reports'] = [tagged(1)]
+    summaries.saved[1] = {'report_id': 1, 'one_line_summary': '지워질 분석'}
+    response = client.delete('/api/reports/1/analysis')
+    assert response.status_code == 200
+    body = response.json()
+    assert body == public_report(tagged(1), None)
+    assert list(body) == PUBLIC_KEYS and body['summary'] is None
+    assert 'analysis_reused' not in body and 'file_path' not in body
+    assert delete.rids == [1]
+    assert summaries.calls == []   # nothing is read back: the answer has no summary
+
+
+def test_delete_hands_analysis_the_requested_id_once_after_reading_that_row(client, db, delete):
+    db.tables['reports'] = [tagged(rid) for rid in (1, 2, 3)]
+    assert client.delete('/api/reports/2/analysis').status_code == 200
+    assert delete.rids == [2]
+    assert [q.filter_values('eq', 'id') for q in db.queries('reports')] == [[2]]
+
+
+def test_deleting_twice_is_the_same_200(client, db, delete):
+    # analysis answers without an error when there is nothing to delete
+    db.tables['reports'] = [tagged(1)]
+    first, second = client.delete('/api/reports/1/analysis'), client.delete('/api/reports/1/analysis')
+    assert (first.status_code, second.status_code) == (200, 200)
+    assert first.json() == second.json() == public_report(tagged(1), None)
+    assert delete.rids == [1, 1]
+
+
+@pytest.mark.parametrize('report_type', ['단일종목', '산업', '전략·시황', '기타'])
+def test_an_analysis_can_be_deleted_whatever_the_report_type(client, db, delete, report_type):
+    db.tables['reports'] = [tagged(1, report_type=report_type)]
+    response = client.delete('/api/reports/1/analysis')
+    assert response.status_code == 200
+    assert response.json()['report_type'] == report_type
+    assert delete.rids == [1]
+
+
+@pytest.mark.parametrize('row', [None, tagged(1, status='review_needed'), tagged(1, status='pending'),
+                                 tagged(1, status='verified', reason='foreign')],
+                         ids=['no row', 'not final', 'pending', 'out of scope'])
+def test_deleting_a_missing_report_is_404_before_analysis(client, db, delete, row):
+    # contracts DELETE /api/reports/{rid}/analysis: the row is checked first (404), even when analysis would answer 409
+    delete.error = HTTPException(409, IN_FLIGHT)
+    db.tables['reports'] = [row] if row else []
+    response = client.delete('/api/reports/1/analysis')
+    assert (response.status_code, response.json()) == (404, REPORT_NOT_FOUND)
+    assert delete.rids == []
+
+
+@pytest.mark.parametrize('error, status, detail', [
+    (HTTPException(409, IN_FLIGHT), 409, IN_FLIGHT),
+    (NotReady('분석', DB_REASON), 503, f'분석 기능을 지금 쓸 수 없습니다: {DB_REASON}'),
+], ids=['409 busy', 'analysis not ready'])
+def test_delete_errors_from_analysis_reach_the_browser_unchanged(client, db, delete, error, status, detail):
+    db.tables['reports'] = [tagged(1)]
+    delete.error = error
+    response = client.delete('/api/reports/1/analysis')
+    assert (response.status_code, response.json()) == (status, {'detail': detail})
+    assert delete.rids == [1]
+
+
+def test_delete_needs_no_model_key_no_stock_list_and_no_ai(client, db, delete, analyze, tmp_path,
+                                                          monkeypatch):
+    # clean_env has removed every model key; the stock list is missing too
+    monkeypatch.setenv('KRX_CSV_PATH', str(tmp_path / 'missing.csv'))
+
+    def no_ai():
+        raise AssertionError('deleting takes no AI slot and needs no model')
+
+    monkeypatch.setattr(analysis, 'ai_slot', no_ai)
+    monkeypatch.setattr(analysis, 'phase2_llm', no_ai)
+    db.tables['reports'] = [tagged(1)]
+    assert client.delete('/api/reports/1/analysis').status_code == 200
+    assert delete.rids == [1] and analyze.rows == []
+
+
+async def test_the_service_deletes_after_reading_the_row(db, delete):
+    db.tables['reports'] = [tagged(4)]
+    service = ReportsService()
+    assert await service.delete_analysis(4) == public_report(tagged(4), None)
+    assert delete.rids == [4]
+    with pytest.raises(HTTPException) as exc:
+        await service.delete_analysis(5)
+    assert (exc.value.status_code, exc.value.detail) == (404, REPORT_NOT_FOUND['detail'])
+    assert delete.rids == [4]
 
 
 # ── readiness: DB settings (spec §9.9, §10 item 7) ───────────────────────────
@@ -522,14 +702,15 @@ def test_a_missing_db_setting_is_not_ready(service, monkeypatch, missing, value)
 
 
 def test_without_db_settings_every_address_is_503_with_the_reason(client, stock_csv, storage, analyze,
-                                                                  summaries):
+                                                                  summaries, delete):
     write_pdf(storage, '2026/1.pdf')
     responses = (client.get('/api/stocks/016360/reports'), client.get('/api/reports/1/pdf'),
-                 client.post('/api/reports/1/analyze'))
+                 client.post('/api/reports/1/analyze'), client.post('/api/reports/1/analyze?force=true'),
+                 client.delete('/api/reports/1/analysis'))
     for response in responses:
         assert response.status_code == 503
         assert response.json() == DB_NOT_READY   # a fixed sentence: no URL, no key
-    assert analyze.rows == [] and summaries.calls == []
+    assert analyze.rows == [] and summaries.calls == [] and delete.rids == []
 
 
 WINDOW_CALLS = {
@@ -604,8 +785,8 @@ UNREADABLE = {
 
 
 @pytest.mark.parametrize('make', list(UNREADABLE.values()), ids=list(UNREADABLE))
-def test_an_unreadable_stock_list_stops_only_the_list(client, db, storage, analyze, summaries, tmp_path,
-                                                      monkeypatch, make):
+def test_an_unreadable_stock_list_stops_only_the_list(client, db, storage, analyze, summaries, delete,
+                                                      tmp_path, monkeypatch, make):
     path = tmp_path / 'krx.csv'
     make(path)
     monkeypatch.setenv('KRX_CSV_PATH', str(path))
@@ -613,11 +794,12 @@ def test_an_unreadable_stock_list_stops_only_the_list(client, db, storage, analy
     assert response.status_code == 503
     assert response.json() == STOCKS_NOT_READY   # a fixed sentence: no path, no cause
     assert db.executed == [] and summaries.calls == []
-    # the PDF and analyze addresses do not need the stock list
+    # the PDF, analyze and delete addresses do not need the stock list
     content = write_pdf(storage, '2026/7.pdf')
     db.tables['reports'] = [tagged(7)]
     assert client.get('/api/reports/7/pdf').content == content
     assert client.post('/api/reports/7/analyze').status_code == 200
+    assert client.delete('/api/reports/7/analysis').status_code == 200
 
 
 def test_db_settings_are_checked_before_the_stock_list(client, tmp_path, monkeypatch):
@@ -894,6 +1076,31 @@ def test_reuse_works_end_to_end_without_a_model_key(real_analysis, client):
     # only the requested report's row and summary were read
     assert [q.filter_values('eq', 'id') for q in db.queries('reports')] == [[1]]
     assert [q.filter_values('in', 'report_id') for q in db.queries('report_summaries')] == [[[1]]]
+
+
+def test_force_skips_the_reuse_end_to_end(real_analysis, client):
+    # a saved summary with financial_details is reused without force; with force the request
+    # goes on to the model key check (none here: 503 right before the AI call)
+    db = real_analysis
+    db.tables['reports'] = [tagged(1)]
+    saved = summary_row(1, financial_details={'metrics': []})
+    db.tables['report_summaries'] = [saved]
+    forced = client.post('/api/reports/1/analyze?force=true')
+    assert (forced.status_code, forced.json()) == (503, {'detail': f'분석 기능을 지금 쓸 수 없습니다: {KEY_REASON}'})
+    assert db.queries('report_summaries') == []   # the saved summary was not even read
+    plain = client.post('/api/reports/1/analyze?force=false')
+    assert plain.json() == public_report(tagged(1), saved) | {'analysis_reused': True}
+
+
+def test_deleting_a_report_being_analyzed_is_409_from_the_real_analysis_window(real_analysis, client):
+    from research_desk.features.analysis import service as analysis_service
+    real_analysis.tables['reports'] = [tagged(1)]
+    real_analysis.tables['report_summaries'] = [summary_row(1)]
+    analysis_service._analyzing.add(1)   # an analysis of report 1 is in flight
+    response = client.delete('/api/reports/1/analysis')
+    assert (response.status_code, response.json()) == (409, {'detail': IN_FLIGHT})
+    assert real_analysis.queries('report_summaries') == []
+    assert real_analysis.tables['report_summaries'] == [summary_row(1)]
 
 
 def test_a_non_company_report_is_422_from_analysis(real_analysis, client):

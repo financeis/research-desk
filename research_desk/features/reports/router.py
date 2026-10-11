@@ -7,12 +7,17 @@
   ``기업 보고서를 찾을 수 없습니다.`` without that row, ``PDF를 찾을 수 없습니다.`` outside the
   storage folder or not a PDF, ``로컬 PDF 파일이 없습니다. 수집 상태를 확인해 주세요.`` when the
   file is missing.
-- ``POST /api/reports/{rid}/analyze`` → public report + ``"analysis_reused": bool``; 404 without
-  the row, then analysis' 409 / 422 / 404.
+- ``POST /api/reports/{rid}/analyze`` (query ``force``, default false) → public report +
+  ``"analysis_reused": bool``; 404 without the row, then analysis' 409 / 422 / 404. ``force=true``
+  skips only analysis' reuse of a saved summary (``analysis_reused`` is then always false).
+- ``DELETE /api/reports/{rid}/analysis`` → public report with ``"summary": null``, also when there
+  was nothing to delete; 404 without the row, then analysis' 409. Any report type; no AI slot and
+  no model key.
 
 When the feature cannot prepare, the service raises ``NotReady("리포트", …)`` (analysis may raise
 ``NotReady("분석", …)``); the web app turns it into a 503. The handler names and parameters (and
-no handler docstrings) match the old app, so these entries of ``/openapi.json`` stay the same.
+no handler docstrings) match the old app, so these entries of ``/openapi.json`` stay the same; the
+analyze entry only gains the ``force`` query value.
 """
 from fastapi import APIRouter, Depends
 from fastapi.responses import FileResponse
@@ -33,5 +38,10 @@ def pdf(rid: int, service=Depends(get_service)):
 
 
 @router.post("/api/reports/{rid}/analyze")
-async def analyze(rid: int, service=Depends(get_service)):
-    return await service.analyze(rid)
+async def analyze(rid: int, force: bool = False, service=Depends(get_service)):
+    return await service.analyze(rid, force=force)
+
+
+@router.delete("/api/reports/{rid}/analysis")
+async def delete_analysis(rid: int, service=Depends(get_service)):
+    return await service.delete_analysis(rid)

@@ -2,14 +2,17 @@
 
 - ``World``: reports and their saved summaries behind the two window functions compare calls.
   ``get_report`` answers like ``reports.get_report``: the in-scope rule of ``domain.reports``, the
-  public shape of ``reports.public_report``, else 404 ``기업 보고서를 찾을 수 없습니다.``.
+  public shape of ``reports.public_report``, else 404 ``기업 보고서를 찾을 수 없습니다.``; an
+  optional ``after_read`` hook runs after each read (to change the world between two reads).
   ``save_comparison`` writes like ``analysis.save_comparison``: the four comparison fields of an
   existing summary.
 - ``FakeAI``: ``analysis.phase2_llm`` handing out a client whose ``parse`` records each call and
   answers a DiffResult (optionally held by a gate, failing, or refusing).
 - ``FakeSupabase``: an in-memory supabase-py client for the real reports and analysis windows
-  (select / update / upsert with eq, in_ and is_('null')).
+  (select / update / upsert / delete with eq, neq, in_ and is_('null')); an optional
+  ``before_execute`` hook sees each query first (to hold one in its worker thread).
 - ``until`` / ``never``: wait on a condition by wall-clock time, not by loop ticks.
+- ``reports_are_free``: none of the reports is marked busy (analysis' busy-report window).
 - ``build_app``: this feature's router plus the NotReady → 503 answer the web app adds.
 """
 from __future__ import annotations
@@ -17,7 +20,7 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 from types import SimpleNamespace
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
@@ -25,11 +28,15 @@ from fastapi.responses import JSONResponse
 from research_desk.core.llm import StructuredResult
 from research_desk.core.settings import NotReady
 from research_desk.domain.reports import is_in_scope
-from research_desk.features import reports
+from research_desk.features import analysis, reports
 from research_desk.features.compare import router
 from research_desk.features.compare.schemas import DiffResult
 
 REPORT_NOT_FOUND = '기업 보고서를 찾을 수 없습니다.'
+# 409 of a narrative when one of its reports is busy (compare's text) …
+BUSY = '선택한 보고서를 분석하거나 지우는 중입니다. 잠시 후 다시 시도해 주세요.'
+# … and of an analysis or a delete of a busy report (analysis' text)
+IN_FLIGHT = '이 보고서는 분석 중입니다. 잠시 후 새로고침해 주세요.'
 
 
 def build_app() -> FastAPI:
@@ -82,6 +89,7 @@ class World:
         self.summaries: dict[int, dict] = {}
         self.reads: list[int] = []
         self.saved: list[tuple] = []
+        self.after_read: Optional[Callable[[int], None]] = None
 
     def add(self, row: dict, summary: Optional[dict] = None) -> dict:
         self.rows[row['id']] = row
@@ -98,7 +106,10 @@ class World:
         row = self.rows.get(rid)
         if row is None or not is_in_scope(row):
             raise HTTPException(404, REPORT_NOT_FOUND)
-        return self.public(rid)
+        report = self.public(rid)
+        if self.after_read is not None:
+            self.after_read(rid)
+        return report
 
     def save_comparison(self, report_id: int, prev_report_id: Optional[int], match_type: str,
                         narrative: Optional[str], comparison_details: Optional[dict] = None) -> None:
@@ -186,8 +197,16 @@ class FakeQuery:
         self.kind, self.payload, self.on_conflict = 'upsert', deepcopy(payload), on_conflict
         return self
 
+    def delete(self) -> "FakeQuery":
+        self.kind = 'delete'
+        return self
+
     def eq(self, column: str, value: Any) -> "FakeQuery":
         self.filters.append(('eq', column, value))
+        return self
+
+    def neq(self, column: str, value: Any) -> "FakeQuery":
+        self.filters.append(('neq', column, value))
         return self
 
     def in_(self, column: str, values) -> "FakeQuery":
@@ -207,10 +226,12 @@ class FakeQuery:
             cell = row.get(column)
             if operator == 'is':
                 ok = cell is None
-            elif cell is None:
+            elif cell is None:   # like SQL: NULL passes neither = nor <> nor IN
                 ok = False
             elif operator == 'eq':
                 ok = cell == value
+            elif operator == 'neq':
+                ok = cell != value
             else:  # in
                 ok = cell in value
             if not ok:
@@ -223,6 +244,8 @@ class FakeQuery:
         return {name.strip(): deepcopy(row.get(name.strip())) for name in self.columns.split(',')}
 
     def execute(self) -> SimpleNamespace:
+        if self.db.before_execute is not None:
+            self.db.before_execute(self)
         self.db.executed.append(self)
         rows = self.db.tables.setdefault(self.table, [])
         if self.kind == 'upsert':
@@ -240,6 +263,9 @@ class FakeQuery:
             for row in matched:
                 row.update(deepcopy(self.payload))
             return SimpleNamespace(data=[deepcopy(row) for row in matched])
+        if self.kind == 'delete':
+            rows[:] = [row for row in rows if not self._passes(row)]
+            return SimpleNamespace(data=[deepcopy(row) for row in matched])
         return SimpleNamespace(data=[self._shape(row) for row in matched])
 
 
@@ -249,6 +275,7 @@ class FakeSupabase:
     def __init__(self) -> None:
         self.tables: dict[str, list[dict]] = {'reports': [], 'report_summaries': []}
         self.executed: list[FakeQuery] = []
+        self.before_execute: Optional[Callable[[FakeQuery], None]] = None
 
     def table(self, name: str) -> FakeQuery:
         return FakeQuery(self, name)
@@ -277,3 +304,11 @@ async def never(condition, for_s: float = 0.2) -> None:
         assert not condition(), 'condition reached'
         await asyncio.sleep(0.005)
     assert not condition(), 'condition reached'
+
+
+# ── the busy-report marker ───────────────────────────────────────────────────
+
+async def reports_are_free(*ids: int) -> None:
+    """None of ``ids`` is busy: analysis' window can mark them all now (a leak fails here)."""
+    async with analysis.hold_reports(ids, 'still marked busy'):
+        pass

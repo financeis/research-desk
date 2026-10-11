@@ -328,8 +328,10 @@ Analyze reports from Research Desk (see above). Each analysis extracts financial
 details. Reports that already have a detailed analysis are reused; reports with
 only a basic summary are analyzed again when selected.
 
-Numeric observations without support in their cited quote and PDF page are omitted.
-This check does not guarantee correct table-column alignment. Missing figures stay
+For PDFs with a text layer, numeric observations without support in their cited quote and PDF
+page are omitted; this check does not guarantee correct table-column alignment. PDFs with almost
+no extractable body text are read by the model from page images instead; those numbers are not
+checked against the text and the screen marks them as such. Missing figures stay
 empty, and source evidence remains available for review. Comparisons use previously
 saved analyses; they do not claim complete market consensus. OCR, collection,
 tagging, market data and backtesting are outside this feature.

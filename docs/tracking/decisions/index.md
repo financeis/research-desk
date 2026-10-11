@@ -28,3 +28,5 @@
 | [0024](0024-flows-ranking-sorted-by-percentile-mean.md) | 수급 순위의 정렬은 백분위 평균이다 | 2026-10-11 |
 | [0025](0025-flows-ranks-in-db-function-fixed-per-day.md) | 250일 순위는 DB 함수로 계산하고 그날 값으로 고정한다 | 2026-10-11 |
 | [0026](0026-prices-keep-a-year-of-adjusted-closes.md) | 주가는 1년치 수정 종가 이력을 둔다(0012 일부 대체) | 2026-10-11 |
+| [0027](0027-text-less-pdfs-analyzed-from-page-pictures.md) | 글자 없는 PDF는 분석도 쪽 그림으로 읽는다 | 2026-10-11 |
+| [0028](0028-clear-narratives-citing-a-changed-analysis.md) | 분석 결과가 바뀌거나 지워지면 그 리포트를 앞 문서로 삼은 해석문을 비운다 | 2026-10-11 |

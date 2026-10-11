@@ -7,7 +7,7 @@
 - `llm.py`: 모델 이름으로 공급자(Anthropic API, OpenAI API, 로컬 Codex CLI)를 골라 구조화 출력을 받는 `LLMClient`(`parse` — 사용자 메시지에 그림 PNG를 붙이는 `images` 인자 포함)와 OpenAI 임베딩(`embed`), 그림을 받는 모델인지 이름으로 판정하는 `supports_images`와 그 오류 `ImageInputUnsupported`, 키 확인 `require_key`, 일시 오류 묶음 `TRANSIENT_ERRORS`, 한 번 재시도 `call_with_retry`.
 - `kis.py`: 한국투자증권 Open API 클라이언트 `KisClient`(접근 토큰, 수정주가 일봉 `daily_prices`, 현재가 `quote`, 종목별 투자자매매동향(일별) `investor_daily`, 호출 간격·재시도·키 가리기), 오류 `KisError`.
 - `mongo.py`: MongoDB 읽기 핸들 `mongo_collection`과 접속 확인 `ping`.
-- `pdf.py`: 저장 폴더 안의 PDF인지 확인(`resolve_in_storage`), 쪽별 글자, 쪽 수, 쪽 그림(PNG). PyMuPDF를 쓰는 모든 호출은 프로세스 전체 잠금 하나(`_PYMUPDF_LOCK`)로 줄 세운다. import할 때 MuPDF가 오류·경고를 stdout에 직접 찍지 못하게 끈다(`pymupdf.TOOLS.mupdf_display_errors(False)`·`mupdf_display_warnings(False)`) — 명령의 stdout은 JSON 하나여야 하는데, 어떤 PDF는 `MuPDF error: format error: …`를 그 앞에 끼워 넣었다. 끄지 않는다. 오류는 지금처럼 예외나 빈 결과로 드러난다.
+- `pdf.py`: 저장 폴더 안의 PDF인지 확인(`resolve_in_storage`), 쪽별 글자, 쪽 수, 쪽 그림(PNG), AI에게 보낼 여러 쪽 그림을 크기 한도 안에서 그리기(`render_pages_fitting`). PyMuPDF를 쓰는 모든 호출은 프로세스 전체 잠금 하나(`_PYMUPDF_LOCK`)로 줄 세운다. import할 때 MuPDF가 오류·경고를 stdout에 직접 찍지 못하게 끈다(`pymupdf.TOOLS.mupdf_display_errors(False)`·`mupdf_display_warnings(False)`) — 명령의 stdout은 JSON 하나여야 하는데, 어떤 PDF는 `MuPDF error: format error: …`를 그 앞에 끼워 넣었다. 끄지 않는다. 오류는 지금처럼 예외나 빈 결과로 드러난다.
 - 외부 도구 `supabase`·`asyncpg`·`openai`·`anthropic`·`dotenv`·`fitz`/`pymupdf`·`pymongo`/`bson`·`httpx`는 저장소 전체에서 이 칸만 import한다. DB 연결·AI 호출·외부 API·PDF 열기·`.env` 읽기를 한곳에 모아 두어, 나중에 서버를 옮기거나 공급자를 바꿀 때 고칠 범위가 이 칸으로 줄어든다.
 
 ## 맡지 않는 일
@@ -19,7 +19,7 @@
 - 웹. FastAPI·starlette를 import하지 않고 HTTP 응답이나 상태 코드를 만들지 않는다. 오류는 평범한 예외로 던지고, 404·503으로 바꾸는 일은 기능(`features/*`)과 `web`이 한다.
 - 호출하는 쪽마다 다른 정책.
   - 모델 기본값은 `tagger/settings.py`·`features/analysis/settings.py`·`features/peers/settings.py`, 프롬프트와 응답 스키마는 각 칸에 있다.
-  - 재시도와 시간 한도는 호출자가 정한다. 분류기는 SDK 재시도 2·요청 60초에 실패한 행을 `pending`으로 되돌리고, 분석·비교는 SDK 기본 재시도에 `call_with_retry`와 호출마다 `PHASE2_PER_REPORT_TIMEOUT_S`를 쓴다. 유사도 계산은 `call_with_retry`에 회사마다 `PEERS_PER_COMPANY_TIMEOUT_S`, 임베딩 호출마다 60초, 테마 검색의 질의 임베딩은 15초다.
+  - 재시도와 시간 한도는 호출자가 정한다. 분류기는 SDK 재시도 2·요청 60초에 실패한 행을 `pending`으로 되돌리고, 분석·비교는 SDK 기본 재시도에 `call_with_retry`와 호출마다 `PHASE2_PER_REPORT_TIMEOUT_S`를 쓴다(분석의 그림 분석은 `PHASE2_IMAGE_TIMEOUT_S`이고 시간 초과를 다시 시도하지 않는다 — analysis가 시간 초과를 재시도 대상이 아닌 오류로 감싸서 처리하고 `call_with_retry`는 그대로다). 유사도 계산은 `call_with_retry`에 회사마다 `PEERS_PER_COMPANY_TIMEOUT_S`, 임베딩 호출마다 60초, 테마 검색의 질의 임베딩은 15초다.
   - 동시 호출 수도 호출자 몫이다. 분류기는 `MAX_CONCURRENT_LLM`(운영 천장 2), 웹 서버의 분석·비교는 analysis의 `ai_slot`(2), 테마 검색의 질의 임베딩은 peers의 자체 자리(2), 유사도 계산은 `PEERS_MAX_CONCURRENT_LLM`(운영 천장 2)이 막는다.
   - KIS의 초당 호출 수는 호출자가 `max_calls_per_sec`로 넘긴다(`PRICES_MAX_CALLS_PER_SEC`, `FLOWS_MAX_CALLS_PER_SEC`).
   - core에 공통 제한이나 기본 정책을 새로 넣지 않는다. 넣으면 호출자마다 지켜 온 방식이 한꺼번에 바뀐다. 예외는 하나, 일부러 둔 PDF 잠금이다(아래 PDF). 호출자의 정책이 아니라 PyMuPDF가 여러 스레드 동시 사용을 지원하지 않는다는 도구의 제약이라 core에 둔다. AI 호출은 줄 세우지 않는다.
@@ -120,7 +120,12 @@ PDF.
 - 웹으로 PDF를 내보낼 때 이 확인을 건너뛰고 DB의 `file_path`를 바로 열지 않는다. 저장 폴더 밖의 `.env` 같은 파일이 새어 나가는 길이 된다.
 - `page_texts`는 예외를 던지지 않는다. 열 수 없는 파일(없음·깨짐·빈 파일)은 `[]`, 읽지 못한 쪽은 그 쪽만 `""`이다. 분류기의 "PDF를 읽을 수 없음" 판정과 분석의 "읽을 글자 없음" 422가 이것에 기댄다.
 - `page_count`·`render_page_png`는 파일 여는 오류를 그대로 올린다. `render_page_png`의 쪽 번호는 1부터, 기본 120dpi, 범위 밖이면 `PageNotFound`(`LookupError`의 하위)다.
-- **PyMuPDF 잠금.** PyMuPDF는 여러 스레드에서 동시에 쓰는 것을 지원하지 않는데, 이 모듈은 여러 스레드에서 불린다(분류기는 두 행의 PDF를 작업 스레드에서, 웹앱은 검토 쪽 그림과 분석 본문 읽기를 스레드 풀에서). 그래서 `page_texts`·`page_count`·`render_page_png`는 문서를 열기 전부터 닫을 때까지 프로세스 전체 잠금 `_PYMUPDF_LOCK`(재진입 가능한 `threading.RLock`, 안에서 이 모듈의 다른 함수를 불러도 막히지 않는다)을 쥔다. 한 번에 한 호출만 PyMuPDF 안에 있고 나머지는 차례를 기다린다. 결과와 오류 동작은 잠금 전과 같다.
+- `render_pages_fitting(path, max_pages, dpi=120)` → `[(쪽 번호, png), …]`(쪽 순서, 쪽 번호는 1부터의 진짜 번호). 분석의 그림 분석이 쓴다.
+  - 한 장 한도(`PAGE_IMAGE_MAX_SIDE_PX` 7000px, `PAGE_IMAGE_MAX_BASE64_BYTES` 4,500,000자)를 넘는 쪽은 그 쪽만 해상도를 낮춰 다시 그린다(`_FIT_MARGIN`, 최대 `_FIT_ATTEMPTS`번). 분류기 `tagger/nodes/extract_pdf.py`의 1쪽 그리기와 같은 방식이고 같은 값이지만, 분류기는 자기 사본을 쓴다(core는 tagger를 import하지 않는다). 한 장 한도를 바꾸면 두 곳을 함께 바꾼다.
+  - 합계 한도(`PAGE_IMAGES_MAX_TOTAL_BASE64_BYTES` 20,000,000자, Anthropic 요청 한도 32MB보다 여유)를 넘으면 모든 쪽을 같은 비율로 낮춰 다시 그리고, 그래도 넘으면 뒤쪽부터 뺀다.
+  - 못 그린 쪽은 빠지고 나머지는 자기 번호를 지킨다. 열 수 없는 파일·암호·0쪽은 `[]`이고 예외를 던지지 않는다. 문서를 한 번 열고 호출 내내 잠금을 쥔다(20쪽이면 1~2초, 그동안 같은 프로세스의 다른 PDF 일은 기다린다).
+  - Anthropic은 한 요청에 그림이 20장을 넘으면 장당 한도가 더 작아진다고 알려져 있다(확인 못 함). 분석은 최대 20장이라 해당하지 않는다. 더 많이 보내게 바꾸면 한 장 한도를 다시 정한다.
+- **PyMuPDF 잠금.** PyMuPDF는 여러 스레드에서 동시에 쓰는 것을 지원하지 않는데, 이 모듈은 여러 스레드에서 불린다(분류기는 두 행의 PDF를 작업 스레드에서, 웹앱은 검토 쪽 그림과 분석 본문 읽기를 스레드 풀에서). 그래서 `page_texts`·`page_count`·`render_page_png`·`render_pages_fitting`은 문서를 열기 전부터 닫을 때까지 프로세스 전체 잠금 `_PYMUPDF_LOCK`(재진입 가능한 `threading.RLock`, 안에서 이 모듈의 다른 함수를 불러도 막히지 않는다)을 쥔다. 한 번에 한 호출만 PyMuPDF 안에 있고 나머지는 차례를 기다린다. 결과와 오류 동작은 잠금 전과 같다.
   - 일부러 둔 프로세스 전체 제한이다. 잠금은 프로세스마다 하나라 분류기와 웹앱(서로 다른 프로세스)끼리는 기다리지 않는다.
   - 대가: PDF 일이 한 줄로 선다(PDF 읽기는 AI 호출보다 훨씬 짧아 처리량은 거의 그대로다). PyMuPDF 호출 하나가 멈추면 그 프로세스의 뒤 PDF 호출이 모두 기다린다 — 분류기에서는 기다리는 시간도 행 시간 한도(`PER_ROW_DEADLINE_S`)에 들어가고, 웹앱에서는 검토 쪽 그림·분석이 서버를 다시 켤 때까지 기다린다.
   - PyMuPDF를 쓰는 새 함수도 이 잠금 안에서 열고 닫는다. 다른 칸에서 PyMuPDF를 직접 쓰지 않는다(`R9 외부 도구`도 막는다).
