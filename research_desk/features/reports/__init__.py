@@ -1,10 +1,12 @@
-"""Reports (기업 리포트): reads of tagged reports, the report list, PDF and analyze routes.
+"""Reports (기업 리포트): reads of tagged reports, the report list, PDF, analyze and delete-analysis
+routes.
 
 This feature owns the reads of finished classifications in the reports table (spec §4); other
 features read reports only through the names below. Public names:
 
 - ``router``: ``GET /api/stocks/{code}/reports``, ``GET /api/reports/{rid}/pdf``,
-  ``POST /api/reports/{rid}/analyze`` (spec §6).
+  ``POST /api/reports/{rid}/analyze`` (query ``force``), ``DELETE /api/reports/{rid}/analysis``
+  (spec §6).
 - ``report_row(rid)`` → the in-scope DB row (16 columns, file_path included: never send it to
   the browser); 404 ``기업 보고서를 찾을 수 없습니다.`` when there is none.
 - ``get_report(rid)`` → ``public_report`` of that row with its saved summary.

@@ -17,8 +17,9 @@ freshness and flows addresses) and in the feature order; ``feature_router``: a w
 mounts every feature; the screen files and their default folder; /openapi.json on, the docs pages
 off; the host and origin checks and their nesting; the 503 answers (NotReady: the feature's text
 and one warning line; anything else: the fixed sentence and its traceback in the log); the
-assembled app reaches peers, freshness and flows; making the app reads no setting and prepares no
-feature.
+assembled app reaches peers, freshness and flows; the analyze address hands ``force`` to the
+reports service and the analysis delete address reaches it, and a delete from another origin is 403
+before it runs; making the app reads no setting and prepares no feature.
 """
 from __future__ import annotations
 
@@ -110,6 +111,7 @@ def test_the_features_are_registered_in_the_list_order(app):
         '/api/health',
         '/api/workspace', '/api/favorites/{code}',                                              # companies
         '/api/stocks/{code}/reports', '/api/reports/{rid}/pdf', '/api/reports/{rid}/analyze',   # reports
+        '/api/reports/{rid}/analysis',
         '/api/compare', '/api/compare/analyze',                                                 # compare
         '/api/market', '/api/stocks/{code}/activity',                                           # coverage
         '/api/review', '/api/review/{rid}/pdf', '/api/review/{rid}/preview',                    # review
@@ -310,6 +312,19 @@ def test_reads_from_another_origin_are_not_refused(app, method, status):
     assert response.status_code == status
 
 
+@pytest.mark.parametrize('origin', OTHER_ORIGINS)
+def test_deleting_an_analysis_from_another_origin_is_403_before_the_feature_runs(app, tmp_path, origin):
+    fake_reports = FakeReports(tmp_path / 'report.pdf')
+    app.dependency_overrides[reports_service.get_service] = lambda: fake_reports
+    with TestClient(app) as client:
+        refused = client.delete('/api/reports/1/analysis', headers={'origin': origin})
+        assert (refused.status_code, refused.json()) == (403, FORBIDDEN)
+        assert fake_reports.calls == []   # refused before the feature ran
+        own = client.delete('/api/reports/1/analysis', headers={'origin': 'http://127.0.0.1:8520'})
+    assert own.status_code == 200 and own.json()['summary'] is None
+    assert fake_reports.calls == [('delete_analysis', 1)]
+
+
 def test_the_origin_check_still_runs_before_the_host_check(app):
     with TestClient(app) as client:
         other = client.post(UNDO, headers={'host': 'example.com', 'origin': 'https://example.com'})
@@ -326,8 +341,13 @@ class NotReadyCompanies:
 
 
 class NotReadyAnalysis:
-    async def analyze(self, rid):
+    async def analyze(self, rid, force=False):
         raise NotReady('분석', KEY_REASON)
+
+
+class NotReadyReportsDelete:
+    async def delete_analysis(self, rid):
+        raise NotReady('리포트', DB_REASON)
 
 
 def review_not_ready():
@@ -339,9 +359,13 @@ def review_not_ready():
      not_ready('기업 목록', STOCKS_REASON)),
     (reports_service.get_service, NotReadyAnalysis, 'POST', '/api/reports/1/analyze',
      not_ready('분석', KEY_REASON)),
+    (reports_service.get_service, NotReadyAnalysis, 'POST', '/api/reports/1/analyze?force=true',
+     not_ready('분석', KEY_REASON)),
+    (reports_service.get_service, NotReadyReportsDelete, 'DELETE', '/api/reports/1/analysis',
+     not_ready('리포트', DB_REASON)),
     (review_service.get_service, review_not_ready, 'GET', '/api/review',   # the preparation itself
      not_ready('검토', DB_REASON)),
-], ids=['sync-handler', 'async-handler', 'dependency'])
+], ids=['sync-handler', 'async-handler', 'async-handler-forced', 'async-delete-handler', 'dependency'])
 def test_not_ready_is_503_with_the_features_text_and_one_warning_line(app, caplog, dependency, stand_in,
                                                                       method, address, body):
     app.dependency_overrides[dependency] = stand_in
@@ -366,14 +390,18 @@ class BrokenCompanies:
 
 
 class BrokenReports:
-    async def analyze(self, rid):
+    async def analyze(self, rid, force=False):
+        raise RuntimeError(f'connection lost: {SECRET}')
+
+    async def delete_analysis(self, rid):
         raise RuntimeError(f'connection lost: {SECRET}')
 
 
 @pytest.mark.parametrize('dependency,stand_in,method,address', [
     (companies_service.get_service, BrokenCompanies, 'GET', '/api/workspace'),
     (reports_service.get_service, BrokenReports, 'POST', '/api/reports/1/analyze'),
-], ids=['sync-handler', 'async-handler'])
+    (reports_service.get_service, BrokenReports, 'DELETE', '/api/reports/1/analysis'),
+], ids=['sync-handler', 'async-handler', 'async-delete-handler'])
 def test_an_unexpected_error_is_503_with_the_fixed_sentence_and_its_traceback_in_the_log(
         app, caplog, dependency, stand_in, method, address):
     app.dependency_overrides[dependency] = stand_in
@@ -415,6 +443,12 @@ def test_routes_and_explicit_analysis(app, tmp_path, monkeypatch):
         assert pdf_response.headers['content-type'] == 'application/pdf'
         assert pdf_response.content == PDF_BYTES
         assert client.post('/api/reports/1/analyze').json()['summary']['one_line_summary'] == '검증된 응답'
+        assert client.post('/api/reports/2/analyze?force=true').json()['analysis_reused'] is False
+        assert client.post('/api/reports/3/analyze?force=false').status_code == 200
+        deleted = client.delete('/api/reports/4/analysis')
+        assert (deleted.status_code, deleted.json()['id'], deleted.json()['summary']) == (200, 4, None)
+        assert fake_reports.calls == [('analyze', 1, False), ('analyze', 2, True), ('analyze', 3, False),
+                                      ('delete_analysis', 4)]
         # compare, through the reports window
         result = client.get('/api/compare?left=2&right=1').json()
         assert result['left']['id'] == 1 and result['right']['id'] == 2

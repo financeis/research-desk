@@ -22,8 +22,10 @@ zeros; the DB is asked with the code as received.
 
 Analysis (spec §9.5): the analyze request reads the in-scope row first (404 when there is none),
 then hands the row to ``analysis.analyze_report``, which checks the request in flight (409),
-단일종목 (422), reuse, the model key and the PDF. Summaries come from ``analysis.summaries_for``
-(active version, 100 ids per query).
+단일종목 (422), reuse (skipped with ``force``), the model key and the PDF. The delete request
+reads the row the same way, then ``analysis.delete_summary`` (409 while the report is busy; no AI
+slot, no model key, any report type) and answers the public report with no summary. Summaries
+come from ``analysis.summaries_for`` (active version, 100 ids per query).
 
 The public report shape never carries file_path, the storage folder or keys (spec §6).
 ``report_row`` returns the DB row itself (file_path included) for other features' work, never
@@ -181,11 +183,20 @@ class ReportsService:
         except pdf.PDFNotFound as exc:
             raise HTTPException(404, exc.message) from None
 
-    async def analyze(self, rid: int) -> dict:
-        """``POST /api/reports/{rid}/analyze``: the row first (404), then analysis."""
+    async def analyze(self, rid: int, force: bool = False) -> dict:
+        """``POST /api/reports/{rid}/analyze``: the row first (404), then analysis (``force``
+        skips only its reuse of a saved summary)."""
         row = await asyncio.to_thread(self.report_row, rid)
-        summary, reused = await analysis.analyze_report(row)
+        summary, reused = await analysis.analyze_report(row, force=force)
         return public_report(row, summary) | {'analysis_reused': reused}
+
+    async def delete_analysis(self, rid: int) -> dict:
+        """``DELETE /api/reports/{rid}/analysis``: the row first (404), then analysis deletes
+        the result (409 while the report is busy; nothing to delete is fine). The answer is the
+        public report without a summary."""
+        row = await asyncio.to_thread(self.report_row, rid)
+        await analysis.delete_summary(rid)
+        return public_report(row, None)
 
 
 def connect() -> ReportStore:
