@@ -34,13 +34,13 @@
    - 그림 분석: 아래 "그림 분석".
 8. 저장: X를 앞 문서로 삼은 **다른** 행의 비교 칸 네 개를 먼저 비우고(`store.clear_comparisons_citing`) → X를 upsert → `(payload, False)`.
 - `analyze_report`에는 `reports.report_row`가 준 내부 행을 넘긴다. 공개 모양(`get_report`)에는 `file_path`가 없어 6번에서 `KeyError`가 난다.
-- **실패하면 바뀌는 것이 없다.** AI 오류, 시간 초과, 빈 그림 결과, 그림을 못 받는 모델, 그릴 수 없는 PDF, PDF·키 문제 어디서 멈춰도 X의 결과와 다른 행의 해석문은 그대로다. 비우기 뒤 upsert만 실패하면 비운 것은 되돌리지 않는다(비우기를 앞에 두는 이유는 결정 0028).
+- **실패하면 바뀌는 것이 없다.** AI 오류, 시간 초과, 빈 그림 결과, 그림을 못 받는 모델, 그릴 수 없는 PDF, PDF·키 문제 어디서 멈춰도 X의 결과와 다른 행의 해석문은 그대로다. 비우기 뒤 upsert만 실패하면 비운 것은 되돌리지 않는다. 비우기를 앞에 두는 이유: 저장·삭제가 서로 다른 REST 호출이라, 비우기를 뒤에 두면 비우기만 실패했을 때 바뀐 결과를 기준으로 한 옛 해석문이 표시 없이 남는다.
 
 **지우기** (`delete_summary(rid)`, async). 행 확인(404)은 reports가 먼저 한다. 바쁘면 409(위 문구) → 바쁨 표시 → 다른 행의 해석문 비우기 → X 행 삭제(`store.delete_summary_row`, 버전 무관) → 표시 해제. 지울 행이 없어도 오류가 아니다. AI 슬롯·모델 키 없이, 리포트 종류와 상관없이 동작한다. 바쁨 확인과 표시는 이벤트 루프에서 `await` 없이 하고, DB 일만 `asyncio.to_thread`로 돌린다.
 
 **바쁜 리포트 표시.** 웹 서버 안 `_analyzing` 집합 하나를 분석(1번부터 끝까지), 지우기, compare의 해석문 만들기(`hold_reports(ids, busy_detail)`)가 함께 쓴다. `hold_reports`는 들어갈 때 하나라도 바쁘면 아무것도 표시하지 않고 `HTTPException(409, busy_detail)`, 아니면 모두 표시하고 나갈 때(오류 포함) 자기가 표시한 것만 푼다. 해석문을 만드는 데 쓴 두 분석 결과가 저장할 때까지 바뀌거나 지워지지 않게 하려는 것이다(compare가 표시를 건 뒤 요약을 읽는다).
 
-**글자 없는 PDF 판정** (`logic.needs_page_images`). 모든 쪽의 날 글자(쪽 표시 없는 것)로 문서 전체를 한 번 정한다. 쪽마다 `[가-힣]` 수의 평균 `< 50`(`PAGE_IMAGE_MAX_HANGUL_PER_PAGE`) 이고 `[A-Za-z]` 수의 평균 `< 300`(`PAGE_IMAGE_MAX_LATIN_PER_PAGE`)이면 그림 분석이다. 딱 같으면 글자 분석이다. 두 값은 조정 가능한 상수지만 테스트를 맞추려고 낮추지 않는다(근거는 결정 0027). 쪽마다 따로 정하지 않는다.
+**글자 없는 PDF 판정** (`logic.needs_page_images`). 모든 쪽의 날 글자(쪽 표시 없는 것)로 문서 전체를 한 번 정한다. 쪽마다 `[가-힣]` 수의 평균 `< 50`(`PAGE_IMAGE_MAX_HANGUL_PER_PAGE`) 이고 `[A-Za-z]` 수의 평균 `< 300`(`PAGE_IMAGE_MAX_LATIN_PER_PAGE`)이면 그림 분석이다. 딱 같으면 글자 분석이다. 두 값은 조정 가능한 상수지만 테스트를 맞추려고 낮추지 않는다(실측: 본문이 빠진 PDF는 쪽당 한글 0~38자, 글이 짧아도 정상인 PDF는 76자 이상, 보통 리포트는 200자 이상). 쪽마다 따로 정하지 않는다.
 
 **그림 분석.**
 - 모델이 그림을 받지 못하면(`core.llm.supports_images`) AI 없이 422 `PDF에서 읽을 수 있는 텍스트가 없습니다.`
@@ -63,7 +63,7 @@
 **저장 값.**
 - upsert payload = `ExtractionResult.model_dump()`(`financial_details`는 근거 확인을 거친 값 + `unsupported_numeric_values`) + `report_id`, `input_truncated`, `input_pages_used`, `input_total_pages`, `input_mode`(`'text'`·`'page_image'`, **항상** 넣는다 — upsert는 받은 칸만 바꾸므로 빠뜨리면 경로가 바뀐 다시 분석에서 옛 값이 남는다), `summary_version`, `llm_model`(설정한 이름 그대로, `codex:` 포함), `llm_tokens_input`, `llm_tokens_output`, 비교 칸 네 개(`prev_report_id`, `prev_match_type`, `diff_narrative`, `comparison_details`) = `None`. 키와 순서는 테스트가 고정한다.
 - 다시 분석하면 그 보고서 행의 비교 칸이 비워진다(그 보고서를 뒷 문서로 쓴 해석문이 사라진다). `upsert_summary`는 앞의 세 비교 칸이 `None`이 아니면 `assert`로 거절한다. upsert로 비교 값을 채우지 않는다.
-- X의 결과가 새로 저장될 때(처음 분석, 옛 결과 덮어쓰기, 다시 분석 모두)와 지워질 때, X를 앞 문서로 삼은 다른 행의 비교 칸 네 개도 비운다(`clear_comparisons_citing`: `.update(네 칸 None).eq('prev_report_id', X).neq('report_id', X)`). 비우기는 저장·삭제 직전이다(결정 0028).
+- X의 결과가 새로 저장될 때(처음 분석, 옛 결과 덮어쓰기, 다시 분석 모두)와 지워질 때, X를 앞 문서로 삼은 다른 행의 비교 칸 네 개도 비운다(`clear_comparisons_citing`: `.update(네 칸 None).eq('prev_report_id', X).neq('report_id', X)`). 비우기는 저장·삭제 직전이다.
 - `save_comparison(뒷 문서 id, 앞 문서 id, match_type, narrative, comparison_details)`는 `.update()` + `.eq('report_id', …)`로 비교 칸 네 개만 쓴다. upsert로 바꾸면 분석 결과가 날아간다. 요약 행이 없는 id면 아무것도 쓰지 않고 오류 없이 끝나므로, 부르는 쪽이 두 요약이 있는지 먼저 확인한다.
 - payload 키는 `report_summaries`의 실제 열이어야 하고, `Literal` 값 집합은 DB CHECK 제약과 같다: `target_price_dir` {상향, 불변, 하향, 신규, N/A}, `recommendation` {매수, 중립, 매도, N/A}, `recommendation_dir` {유지, 상향, 하향, 신규, N/A}, `extraction_confidence` {high, medium, low}, `input_mode` {text, page_image}(마이그레이션 010), `prev_match_type` {same_publisher, cross_publisher, none} 또는 NULL, `source_pages`는 모두 1 이상. 필드나 값을 더하면 `migrations/NNN_*.sql`도 함께 만든다.
 
