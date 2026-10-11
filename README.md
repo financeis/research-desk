@@ -75,7 +75,8 @@ Research Desk는 이 과정을 **수집 → 분류 → 열람·분석 → 비교
 
 - **필터:** 발행처, 리포트 유형(단일종목·섹터), 기간, 분석 상태(금융 정보·요약 완료·미분석)로 좁힙니다.
 - **요약 카드:** 수집된 리포트 수, 다룬 발행처 수, 분석한 리포트 수, 가장 최근 분석의 목표주가를 보여 줍니다.
-- **원하는 리포트만 AI 분석:** 체크한 리포트만 분석합니다. 이미 분석한 것은 다시 부르지 않아 비용이 들지 않습니다.
+- **원하는 리포트만 AI 분석:** 체크한 리포트만 분석합니다. 이미 분석한 것은 다시 부르지 않아 비용이 들지 않습니다. 결과가 마음에 들지 않으면 리포트 패널에서 다시 분석하거나 지울 수 있습니다.
+- **글자가 안 뽑히는 PDF도 분석:** 스캔본이나 본문 글자가 뽑히지 않는 배포본은 앞 최대 20쪽을 그림으로 AI에게 보여 줍니다. 이런 결과에는 "그림으로 읽음 · 숫자 원문 대조 안 됨"이 붙습니다(글자 PDF는 숫자를 원문과 자동 대조).
 
 리포트를 열면 오른쪽에 **AI 재무 분석 패널**이 나옵니다.
 
@@ -423,7 +424,7 @@ flowchart TB
 
     subgraph BE["FastAPI 라우터 · research_desk/web"]
         R1["companies<br/>/api/workspace · /api/favorites"]
-        R2["reports + analysis<br/>/api/stocks/{code}/reports<br/>/api/reports/{id}/analyze"]
+        R2["reports + analysis<br/>/api/stocks/{code}/reports<br/>/api/reports/{id}/analyze<br/>DELETE /api/reports/{id}/analysis"]
         R3["compare<br/>/api/compare"]
         R4["coverage<br/>/api/market · /api/stocks/{code}/activity"]
         R5["peers + prices<br/>/api/stocks/{code}/peers<br/>/api/peers/search"]

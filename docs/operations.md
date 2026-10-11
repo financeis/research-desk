@@ -45,6 +45,8 @@
 - 서버를 켤 때 `frontend/dist`가 있어야 `/assets`가 연결된다. 빌드 없이 켜면 `/`가 "프론트엔드를 먼저 빌드해 주세요" 503이다 — 빌드 후 서버를 다시 켠다.
 - 한 기능의 준비가 실패하면(DB 설정 없음, 종목표를 못 읽음, 분석 모델 키 없음) 그 기능 화면만 "○○ 기능을 지금 쓸 수 없습니다: 이유"로 막히고 나머지는 동작한다. 빠진 파일을 채우거나 `.env`에 빠진 값을 넣으면 다음 요청에 회복된다. 이미 있던 `.env` 값을 바꾼 것은 서버를 다시 켜야 한다.
 - 검토 되돌리기는 서버 메모리에만 있어서, 서버를 다시 켜면 직전 처리를 되돌릴 수 없다.
+- 분석 결과는 리포트 상세에서 `다시 분석`(새 결과가 나올 때만 바뀜)하거나 `분석 결과 지우기`(되돌릴 수 없음, 보관하지 않음)할 수 있다. 둘 다 그 리포트를 앞 문서로 삼은 다른 리포트의 비교 해석문도 지운다. 여러 건을 한꺼번에 지우는 명령은 없다.
+- 본문 글자가 사실상 없는 PDF(스캔본, 글자가 뽑히지 않는 배포본 — 미래에셋증권 리포트에 많다)는 그림 분석으로 간다. 글자 분석보다 오래 걸리고(호출 한 번 최대 6분) Codex 사용 한도를 더 쓴다. 결과에는 `그림으로 읽음 · 숫자 원문 대조 안 됨`이 붙는다.
 - 유사 기업 탭과 테마 검색은 공개된 유사도 계산 결과(`peers build`가 `done`으로 끝난 빌드)가 있어야 동작한다. 없으면 `유사 기업 기능을 지금 쓸 수 없습니다: 아직 공개된 유사도 계산 결과가 없습니다(…)`. 새 빌드가 `done`이 되면 웹앱을 다시 켜지 않아도 다음 요청부터 쓴다. 테마 검색에는 `OPENAI_API_KEY`도 있어야 한다.
 - 수급 랭킹과 기업 화면 수급 탭은 `flows update`가 순위를 매긴 날이 있어야 동작한다. 없으면 수급 랭킹이 `수급 기능을 지금 쓸 수 없습니다: 아직 순위를 매긴 날이 없습니다(…)`. 새 날이 매겨지면 웹앱을 다시 켜지 않아도 다음 요청부터 보인다.
 - 모든 화면 맨 위 상태 줄이 주가·수급·리포트 기준일을 보여 준다. 빨간색이면 문장을 보고 원인을 찾는다: 주가가 밀렸으면 작업 스케줄러의 마지막 실행 결과와 `price_update_runs`의 최근 행, 수급이 밀렸으면 같은 예약 실행의 결과(주가 갱신이 실패하면 수급은 건너뛴다)와 `investor_flow_runs`의 최근 행, 리포트가 밀렸으면 수집(`collect`)이 멈췄는지와 분류 대기(`tag inspect`의 `pending`). 회색 `자료 기준일 확인 불가`면 DB 설정을 본다.
@@ -206,7 +208,8 @@ python -m research_desk peers inspect
 - **모델 이름이 공급자를 정한다:** `claude-*` → Anthropic API, `codex:<모델>` → 로컬 Codex CLI(ChatGPT 로그인 한도, API 키 불필요), 그 밖 → OpenAI API. 바꾸거나 되돌릴 때는 `.env`의 모델 이름만 고치고 워커·웹앱을 다시 켠다. 옛 이름 `OPENAI_MODEL_*`도 `LLM_MODEL_*`이 없을 때 읽는다.
 - 분류 명령은 시작할 때 **실제로 쓸 모델**의 키만 확인한다(`tag run`은 태깅 모델, `tag escalate`는 재처리 모델, `--model`을 주면 그 모델). `tag inspect`·`tag reset-worker`·`tag requeue`는 키가 필요 없다.
 - **분류 모델은 그림을 받는 모델이어야 한다.** 글자가 없는 PDF는 1쪽 그림을 AI에게 보여 준다. Claude 모델과 `gpt-5.4` 같은 지금의 OpenAI 모델은 그림을 받는다(codex 경로는 그림 파일을 `-i`로 붙인다). 그림을 받지 못하는 모델(`gpt-3.5…`, `o1-mini` 같은 글자 전용 이름)로 바꾸면 그런 PDF는 AI를 부르지 않고 검토 대기(`first_page_unreadable`)로 가고 배치 보고의 `page_image_unsupported`가 늘며, `tag requeue --unreadable`은 4로 멈춘다.
-- 웹앱은 분석·비교 해석문을 실제로 부르기 직전에만 키·codex를 확인한다. 없으면 `분석 기능을 지금 쓸 수 없습니다: …`로 막히고, 목록·재사용·검토는 그대로 동작한다.
+- 웹앱은 분석·비교 해석문을 실제로 부르기 직전에만 키·codex를 확인한다. 없으면 `분석 기능을 지금 쓸 수 없습니다: …`로 막히고, 목록·재사용·검토·분석 결과 지우기는 그대로 동작한다.
+- **분석 모델도 그림을 받는 모델이어야 한다.** 글자가 사실상 없는 PDF는 그림으로 분석한다. 그림을 받지 못하는 모델이면 그런 PDF는 `PDF에서 읽을 수 있는 텍스트가 없습니다.`로 거절되고 AI를 부르지 않는다(글자 PDF는 그대로 분석된다).
 - 재무 분석이 `codex:gpt-6-luna`인 이유: 사용자가 고른 리포트만 분석하므로 호출량이 적어 로그인 한도로 충분하다. Haiku는 재무 지표를 절반만 뽑고 형식 실패가 12.5%라서 뺐다(2026-10-08, 12건 비교).
 - 재무 분석 응답(`ExtractionResult`)은 스키마가 커서, Claude 모델에서는 형식 강제(grammar) 대신 "스키마를 프롬프트에 넣고 받은 JSON 글자를 pydantic으로 검증"하는 경로(`constrained=False`)를 쓴다. 태깅과 비교는 형식 강제를 쓴다.
 - 사고 깊이: Claude는 `ANTHROPIC_EFFORT`(기본 `medium`), Codex는 `CODEX_REASONING_EFFORT`(기본 `high`. `medium`은 빠르지만 재무 지표가 약 40% 적게 나온다). `codex` 실행 파일 위치는 `CODEX_BIN`(없으면 PATH).
@@ -237,6 +240,7 @@ python -m research_desk peers inspect
 | `TAGGER_BATCH_SIZE_DEFAULT` | tag | **10** | 위 운영 원칙 2 |
 | `LOCK_TTL_MINUTES` / `PER_ROW_DEADLINE_S` | tag | 30 / 90 | 오래된 잠금 기준(분) / 행 하나의 시간 한도(초). `LOCK_TTL_MINUTES × 60`이 배치 하나의 최장 시간(⌈배치 크기 ÷ 동시 처리 수⌉ × 행 한도, 기본 7.5분)보다 길어야 한다 |
 | `PHASE2_PER_REPORT_TIMEOUT_S` | 웹 분석·비교 | 180 | 호출 한 번의 시간 한도. 재무 추출은 지표를 최대 48개 뽑아 gpt-6-luna 기준 최대 ≈105초 걸린다 |
+| `PHASE2_IMAGE_TIMEOUT_S` | 웹 분석(그림 분석) | 360 | 그림 분석 호출 한 번의 시간 한도. 넘으면 자동으로 다시 시도하지 않는다(사용 한도를 아끼려고) |
 | `PHASE2_MAX_INPUT_TOKENS` | 웹 분석 | 30000 | 넣을 PDF 글자의 토큰 어림 한도(글자 수 ÷ 3) |
 | `PHASE2_SUMMARY_VERSION` | 웹 분석 | `llm-summary@1.0` | 화면에 보일 분석 결과 버전. 바꾸면 기존 분석이 화면에서 사라진다 |
 | `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`, `LANGSMITH_ENDPOINT` | AI 호출 기록 | 선택 | `LANGSMITH_TRACING=true`이고 키가 있으면 LangGraph 실행과 LLM 호출을 LangSmith에 기록 |
@@ -301,6 +305,12 @@ python -m research_desk peers inspect
   2. 파일 전체를 한 번 실행한다(한 트랜잭션이고, 끝에서 PostgREST에 표와 함수를 다시 읽게 한다).
   3. 확인: `select relname, relrowsecurity from pg_class where relname in (위 다섯 표);`가 모두 true(RLS 켜짐). 웹앱에서 상태 줄에 `수급 자료가 아직 한 번도 갱신되지 않았습니다`가 보이고 수급 랭킹이 `아직 순위를 매긴 날이 없습니다(…)`면 표가 REST로 보인다(KIS를 부르지 않는 확인).
   4. 순서: 이 저장소의 새 코드(주가 이력·수급)를 예약 실행이나 웹앱으로 돌리기 전에 적용한다. 009 없이 돌리면 `prices update`가 실패하고(스냅샷은 그대로), 웹앱은 상태 줄 주소가 예기치 못한 오류의 503이 되어 모든 화면의 상태 줄이 회색 `자료 기준일 확인 불가`가 된다.
+
+- 010(`010_summary_input_mode.sql`)은 분석 결과 표 `report_summaries`에 칸 `input_mode`(`text`|`page_image`, 기본 `text`, CHECK 제약 `chk_summary_input_mode`)를 더한다. 기존 행은 `text`로 채워지는 것 말고는 데이터를 바꾸지 않고, 다시 실행해도 깨지지 않는다(칸·제약이 이미 있으면 그대로).
+  1. 먼저 같은 이름이 있는지 본다: `select column_name from information_schema.columns where table_name = 'report_summaries' and column_name = 'input_mode';`와 `select conname from pg_constraint where conname = 'chk_summary_input_mode';`. 결과가 있으면 무엇인지 확인한다.
+  2. 파일 전체를 한 번 실행한다(한 트랜잭션이고, 끝에서 PostgREST에 표를 다시 읽게 한다).
+  3. 확인: REST로 `report_summaries`의 `input_mode`를 읽어 기존 행이 모두 `text`인지 본다.
+  4. 순서: **이 칸을 쓰는 새 코드로 웹앱을 켜기 전에** 적용한다. 새 코드는 분석을 저장할 때 늘 `input_mode`를 보내므로, 010 없이 켜면 모든 분석 저장이 실패한다(목록·지우기·재사용은 동작).
 
 ## 테스트
 

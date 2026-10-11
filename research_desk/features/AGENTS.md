@@ -4,8 +4,8 @@
 
 - 웹앱의 업무 기능. 폴더 하나가 기능 하나다.
   - `companies`: 기업 목록·관심 기업
-  - `reports`: 기업별 리포트 목록·PDF·분석 실행 주소, 분류가 끝난 `reports` 행 읽기
-  - `analysis`: 리포트 1건 재무 분석과 `report_summaries` 표. 웹 주소는 없다
+  - `reports`: 기업별 리포트 목록·PDF·분석 실행(다시 분석 포함)·분석 결과 지우기 주소, 분류가 끝난 `reports` 행 읽기
+  - `analysis`: 리포트 1건 재무 분석(글자 없는 PDF는 쪽 그림으로)·결과 지우기·바쁜 리포트 표시와 `report_summaries` 표. 웹 주소는 없다
   - `compare`: 같은 기업의 두 보고서 비교
   - `coverage`: 리서치 커버리지 집계, 종목별 증권사 리포트 수
   - `review`: `review_needed` 행의 수동 검토

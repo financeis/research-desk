@@ -46,11 +46,15 @@ reports (auto / review_needed) ──(같은 직접 연결)──▶ tag requeue
 - **PDF 파일은 로컬 디스크에만 있다.** DB에는 저장 폴더 기준 상대 경로(`file_path`)만 있다. 그래서 분류기와 웹앱은 수집기와 같은 PC, 같은 `STORAGE_BASE_DIR`에서 돌아야 한다.
 - **화면(`frontend/`, React + Vite)** 은 빌드 결과(`frontend/dist`)를 웹 서버가 `/`와 `/assets`로 내준다. 개발 중에는 Vite 개발 서버(5173)가 `/api`를 8520으로 넘긴다. 화면은 `/api/*` 주소와 응답 모양에만 의존하고 파이썬 코드를 모른다. 유사 기업 탭·테마 검색은 `frontend/src/peers/`, 수급 랭킹·수급 탭은 `frontend/src/flows/`, 상태 줄은 `frontend/src/freshness/`에 있다.
 
-## 대표 흐름 — 리포트 분석 버튼 (`POST /api/reports/{rid}/analyze`)
+## 대표 흐름 — 리포트 분석 버튼 (`POST /api/reports/{rid}/analyze`, 다시 분석은 `?force=true`)
 
 1. 브라우저 → `web`: 허용 호스트 검사(127.0.0.1·localhost만) → 다른 출처의 쓰기 거절 검사 → `features/reports` 라우터.
 2. `features/reports`: 처음 쓰일 때 `.env`를 다시 읽고 REST 연결을 만든다(없으면 "리포트 기능 사용 불가" 503). 번호로 분석 대상 행 하나를 읽는다(없으면 404).
-3. `features/reports` → `features/analysis.analyze_report(row)`: 같은 리포트 분석 중이면 409 → 웹 서버 전체 AI 자리 2개 중 하나를 잡음 → 단일종목이 아니면 422 → 재무 상세가 있는 저장 결과가 있으면 그대로 반환 → 모델 키·codex CLI 확인(없으면 "분석 기능 사용 불가" 503) → `core.pdf`로 저장 폴더 안 PDF를 찾아 쪽마다 글자를 뽑음 → `core.llm`으로 AI 호출(시간 한도 180초, 일시 오류면 5초 뒤 1회 재시도) → 숫자 근거 확인 → `report_summaries`에 저장.
+3. `features/reports` → `features/analysis.analyze_report(row, force)`: 같은 리포트가 바쁘면(분석·지우기·비교 해석문 만들기 중) 409 → 웹 서버 전체 AI 자리 2개 중 하나를 잡음 → 단일종목이 아니면 422 → (다시 분석이 아니면) 재무 상세가 있는 저장 결과가 있으면 그대로 반환 → 모델 키·codex CLI 확인(없으면 "분석 기능 사용 불가" 503) → `core.pdf`로 저장 폴더 안 PDF를 찾아 모든 쪽 글자를 뽑음 → 글자가 사실상 없는지 판정.
+   - 글자 분석: `core.llm`으로 AI 호출(시간 한도 180초, 일시 오류면 5초 뒤 1회 재시도) → 숫자 근거 확인.
+   - 그림 분석: `core.pdf`가 1~20쪽을 크기 한도 안의 그림으로 그림 → `core.llm`으로 그림을 붙여 AI 호출(시간 한도 360초, 시간 초과는 재시도 없음) → 빈 답이면 422 → 신뢰도 최대 medium.
+   → 이 리포트를 앞 문서로 삼은 다른 리포트의 비교 해석문을 비움 → `report_summaries`에 저장(`input_mode` 포함).
+   분석 결과 지우기(`DELETE /api/reports/{rid}/analysis`)도 같은 길로 `analysis.delete_summary`에 가서 바쁨 확인 → 해석문 비우기 → 행 삭제를 한다(AI 자리·모델 키 없음).
 4. `features/reports`: 저장 결과를 붙인 리포트 공개 모양(`file_path` 없음) + `analysis_reused`를 돌려준다.
 
 분류 흐름(`tag run`)은 행 하나마다 노드 8개짜리 그래프를 돈다: PDF 첫 쪽 읽기(1~3쪽에 글자가 하나도 없으면 1쪽을 그림으로 그림) → LLM 메타데이터 추출(글자, 또는 글자 대신 그 그림을 보여 줌; AI가 고른 발행처가 사전의 정식 이름인지 확인하고 파일 이름 표기와 대조해 의심 표시) → 세 갈래 분기. ① 글자도 그림도 못 얻었거나 LLM이 거부함 → 읽기 실패 상태 → 쓰기. ② IR자료, 또는 해외·펀드·디지털자산 신호, 또는 비상장 신호인데 원문 코드가 종목표에 없음 → 분석 대상 외 사유 정하기 → 상태 정하기 → 쓰기. ③ 나머지 → 종목표 매칭 → 상태 정하기 → 쓰기. 세 상태 노드는 모두 마지막에 같은 규칙을 적용한다: 그림으로 읽었거나 발행처가 의심스러우면 신뢰도를 `medium`으로 낮추고 메모를 덧붙인다(상태는 그대로). 행들은 `MAX_CONCURRENT_LLM`(2)개씩 동시에 돌고, 행마다 90초 한도가 있다. PDF 읽기·그리기는 프로세스 안에서 한 번에 하나씩만 한다(`core.pdf` 잠금, AI 호출은 동시 2 그대로).
