@@ -39,6 +39,7 @@
 
 - 상태 관리는 React의 `useState`·`useEffect`·`useMemo`·`useRef`뿐이고, 화면 사이 전달은 `main.jsx`가 넘기는 props다(예: `onStock`, `onChanged`; 비교 화면은 `ids`·`reports`·`onBack`·`onChange`·`onAnalyze`·`busy`). 라우터·상태 라이브러리를 쓰지 않는다. 아이콘은 `lucide-react`.
 - 보기 전환은 `main.jsx`의 `view` 상태 하나이고 바뀔 때마다 주소의 `?view=`를 바꾼다(`history.replaceState`, 새로고침 없음). 기업을 고르면(`pickStock`) `reports` 보기로 돌아가고 `?stock=`을 바꾼다. 테마 검색 결과와 유사 기업 표에서 회사를 누르면 그 회사의 유사 기업 탭(`stockMode = "peers"`)이 열린다. 수급 랭킹에서 줄을 누르면 그 회사의 리포트 라이브러리가 열린다. 기업 화면의 수급 탭은 `stockMode = "flows"`다.
+- 수급 화면의 두 표는 유사 기업 표의 모양(`peer-table-wrap`·`peer-table`, `src/peers/peers.css`)을 빌려 쓴다. `peer-table`에는 넓은 표용 `min-width: 1060px`가 있어서, 좁은 칸에 두는 표(기업 화면 수급 탭의 주체 표 `flows-investors`)는 `flows.css`에서 `min-width: 0`으로 되돌린다 — 안 그러면 순매수·시총 대비·순위 칸이 옆으로 밀려나 가로로 굴려야 보인다.
 - 새 화면은 `src/<기능>/` 폴더(유사 기업·수급·상태 줄과 같은 방식)에 두고, `main.jsx`에는 import 한 줄, 메뉴 항목 하나, 보기 분기 한 줄을 더한다. 스타일은 그 폴더의 css에 둔다. 서버 코드 값의 표기는 그 폴더의 `labels.js` 같은 한 곳에 모은다.
 - `main.jsx` 분할이 남아 있다(메뉴·보기 전환 틀 / 공용 부품 / 기능별 폴더). 나눌 때 보기 이름과 서버 주소는 그대로 두고, 분할 전후 화면이 같은지 캡처로 비교한다.
 - 빌드와 실행을 한 번에: `powershell -File scripts\start-workspace.ps1`(`node_modules`가 없으면 `npm ci`, 그다음 `npm run build`, 그다음 웹 서버). Node.js 22.12 이상(또는 20.19 이상).

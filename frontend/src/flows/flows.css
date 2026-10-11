@@ -96,6 +96,11 @@ td.flow-hot {
   gap: 16px;
   align-items: start;
 }
+/* The investors table borrows the peers table look, whose min-width (1060px) is for a full-width
+   table; in this narrow column it pushed the amount, % and rank columns out of sight. */
+.peer-table.flows-investors {
+  min-width: 0;
+}
 .flows-chart-panel h3 {
   display: flex;
   align-items: center;
