@@ -1,7 +1,8 @@
 """DB reads and writes for report_summaries (Supabase REST).
 
-This feature owns the table (spec §4): fetch / upsert / update of the comparison
-fields. Every function takes the supabase-py client as its first argument.
+This feature owns the table (spec §4): fetch / upsert / delete, and update or
+clear of the comparison fields. Every function takes the supabase-py client as
+its first argument.
 """
 from __future__ import annotations
 
@@ -53,3 +54,18 @@ def update_diff(
         'diff_narrative': narrative,
         'comparison_details': comparison_details,
     }).eq('report_id', report_id).execute()
+
+
+def clear_comparisons_citing(sb, report_id: int) -> None:
+    """report_id를 앞 문서로 인용한 다른 행들의 비교 칸 네 개만 NULL로. 분석 결과는 그대로."""
+    sb.table('report_summaries').update({
+        'prev_report_id': None,
+        'prev_match_type': None,
+        'diff_narrative': None,
+        'comparison_details': None,
+    }).eq('prev_report_id', report_id).neq('report_id', report_id).execute()
+
+
+def delete_summary_row(sb, report_id: int) -> None:
+    """report_id 행을 버전과 상관없이 지운다. 행이 없어도 오류 없음."""
+    sb.table('report_summaries').delete().eq('report_id', report_id).execute()
